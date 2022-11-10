@@ -1,10 +1,10 @@
 import numpy as np
 from sklearn.metrics import mean_squared_error, r2_score, make_scorer
-from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet, SGDRegressor, RANSACRegressor, SGDOneClassSVM
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet, SGDRegressor, RANSACRegressor
 from sklearn.svm import OneClassSVM, SVR, LinearSVR
+from sklearn.experimental import enable_iterative_imputer
 from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor, AdaBoostRegressor, BaggingRegressor, HistGradientBoostingRegressor, RandomForestClassifier, IsolationForest, ExtraTreesClassifier, StackingRegressor
 from sklearn.model_selection import train_test_split, cross_validate, GridSearchCV
-from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import SimpleImputer, IterativeImputer
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.feature_selection import RFE, SelectPercentile
@@ -14,17 +14,21 @@ import numpy
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neural_network import MLPRegressor
 import time
 
-
+TRAINING_DATA_X = ""
 def StackedModel():
-        estimators = [ ('kn', KNeighborsRegressor(n_neighbors=12, weights='distance', leaf_size=1, p=1)),
-                       ('lgbm', LGBMRegressor(boosting_type='gbdt', num_leaves=32, max_depth=8, n_estimators=2500)),
-                       ('gb', GradientBoostingRegressor(n_estimators=500, max_depth=4)),
-                       ('svr', SVR(kernel='rbf', C=9, degree=2, tol=1e-2, epsilon=1)),
-                       ('rf', RandomForestRegressor(n_estimators=500, max_depth=8, n_jobs=-1)),
-                       ('xt', ExtraTreesRegressor(n_estimators=400, max_depth=8, n_jobs=-1)),
-                       ('xgb', XGBRegressor(n_estimators=400, max_depth=4, n_jobs=-1))
+        estimators = [
+            ('kn', KNeighborsRegressor(n_neighbors=12, weights='distance', leaf_size=1, p=1)),
+            ('lgbm', LGBMRegressor(boosting_type='gbdt', num_leaves=32, max_depth=8, n_estimators=2500)),
+            ('gb', GradientBoostingRegressor(n_estimators=500, max_depth=4)),
+            ('svr', SVR(kernel='rbf', C=9, degree=2, tol=1e-2, epsilon=1)),
+            ('rf', RandomForestRegressor(n_estimators=500, max_depth=8, n_jobs=-1)),
+            ('xt', ExtraTreesRegressor(n_estimators=400, max_depth=8, n_jobs=-1)),
+            ('xgb', XGBRegressor(n_estimators=400, max_depth=4, n_jobs=-1)),
+            ('ada', AdaBoostRegressor(n_estimators=2000)),
+            ('mlp', MLPRegressor(alpha=1e-1, early_stopping=True, hidden_layer_sizes=(7, 7, 7, 7, 7, 7, 7, 7), learning_rate='invscaling', learning_rate_init=0.1, max_iter=int(1e4)))
              ]
         return StackingRegressor(estimators=estimators, cv=10, n_jobs=-1)
 
@@ -44,22 +48,32 @@ def train(X, y, model):
 def get_test_data():
     data = pandas.read_csv("X_test.csv")
     X = data.loc[:, "x0":].to_numpy()
-    X = impute_missing_values(X)
+    X = impute_missing_values_simple(X)
     X = normalize_data(X)
     X = feature_selection_regressor(X, reset=False)
     return X
 
 
-def get_eval_data():
-    X_data = pandas.read_csv("X_train.csv")
+def read_data():
+    X_data = pandas.read_csv(TRAINING_DATA_X)
     y_data = pandas.read_csv("y_train.csv")
     X = X_data.loc[:, "x0":].to_numpy()
     y = y_data["y"].to_numpy()
-    X = impute_missing_values(X)
+    return X, y
+
+def get_eval_data():
+    X, y = read_data()
+    X = impute_missing_values_simple(X)
     X, y = remove_outliers(X, y)
     X = normalize_data(X)
     X = feature_selection_regressor(X, y)
     return X, y
+
+def cache_impute_result():
+    X_data = pandas.read_csv(TRAINING_DATA_X)
+    X = X_data.loc[:, "x0":].to_numpy()
+    X = impute_missing_values_iterative(X)
+    pandas.DataFrame(data=X, columns=X_data.columns[1:]).to_csv("X_train_cached.csv", index=True, index_label='id')
 
 def get_train_data():
     X, y = get_eval_data()
@@ -74,11 +88,18 @@ def normalize_data(X):
     return NORMALIZER.transform(X)
 
 IMPUTER = None
-def impute_missing_values(X):
+def impute_missing_values_simple(X):
     global IMPUTER
     if IMPUTER is None:
         # IMPUTER = IterativeImputer(initial_strategy="median")
         IMPUTER = SimpleImputer(strategy="median")
+        IMPUTER.fit(X)
+    return IMPUTER.transform(X)
+
+def impute_missing_values_iterative(X):
+    global IMPUTER
+    if IMPUTER is None:
+        IMPUTER = IterativeImputer(initial_strategy="median")
         IMPUTER.fit(X)
     return IMPUTER.transform(X)
 
@@ -118,26 +139,34 @@ def feature_selection_regressor(X, y=None, features=0.1125, reset=True):
 # ('RandomForestRegressor', 16.027996902004816, 0.5047773134960797)
 # ('ExtraTreesRegressor', 2.9239139769924805, 0.5053379082346622)
 # ('XGBRegressor', 7.853434015007224, 0.47745816217877224)
+# ('AdaBoostRegressor', -1, 0.4876988170828006)
+# ('MLPRegressor', -1, 0.4233371020725281)
 
-# (0.5379693926403559, 'StackingRegressor', 243.9226017210167, 0.05)
-# (0.5509380984579313, 'StackingRegressor', 360.2155537600047, 0.075)
-# (0.5524984726498261, 'StackingRegressor', 484.57678742997814, 0.1)
-# (0.5375062286090689, 'StackingRegressor', 593.045807684015, 0.125)
-# (0.5499284854700299, 'StackingRegressor', 701.7328916389961, 0.15)
-# (0.5439992550244156, 'StackingRegressor', 819.007373806031, 0.175)
-# (0.5479271558373129, 'StackingRegressor', 941.84727819002, 0.2)
-# (0.5269830363900956, 'StackingRegressor', 1418.1779224979691, 0.3)
+# StackingRegressor SimpleImputer
+# 727.248965251958
+# 0.5576333296254736
+
+# StackingRegressor IterativeImputer
+# 778.5039008309832
+# 0.48661298297559813
+
 
 def main():
-    # start = time.perf_counter()
-    # scores = cross_validate(model, X, y, cv=10, scoring=make_scorer(r2_score), n_jobs=-1)["test_score"]
-    # end = time.perf_counter()
-    # print(end - start)
-    # print(sum(scores) / len(scores))
-    # clf = GridSearchCV(model, {}, verbose=1, n_jobs=-1)
+    global TRAINING_DATA_X
+    TRAINING_DATA_X = "X_train.csv"
+    X, y = read_data()
+    model = StackedModel()
+    start = time.perf_counter()
+    scores = cross_validate(model, X, y, cv=10, scoring='r2', n_jobs=-1)["test_score"]
+    end = time.perf_counter()
+    print(end - start)
+    print(sum(scores) / len(scores))
+    # , 'poly' 'degree': [2, 3, 4, 5] 'coef0': [0], 'rbf', 'sigmoid' 'coef0': [0]
+    # model = SVR()
+    # clf = GridSearchCV(model, { 'kernel': ['rbf'], 'C': [19], 'gamma': ['scale'], 'tol': [1e-2, 1e-3, 1e-4], 'epsilon': [0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1, 2]}, verbose=10, n_jobs=-1, scoring='r2')
     # clf.fit(X, y)
-    # print(clf.best_score_)
-    # print(clf.best_params_)
+    # print(type(model).__name__, clf.best_score_)
+    # print(type(model).__name__, clf.best_params_)
     # stats = []
     # param_space = [0.10625, 0.1125, 0.11875, 0.125]
     # for param in param_space:
@@ -145,7 +174,7 @@ def main():
     #     model = SVR(kernel='rbf', C=9, degree=2, tol=1e-2, epsilon=1)
     #     # model = StackedModel()
     #     start = time.perf_counter()
-    #     scores = cross_validate(model, X, y, cv=10, scoring=make_scorer(r2_score), n_jobs=-1)["test_score"]
+    #     scores = cross_validate(Pmodel, X, y, cv=10, scoring='r2', n_jobs=-1)["test_score"]
     #     end = time.perf_counter()
     #     stats.append((sum(scores) / len(scores), type(model).__name__, end - start, param))
     #     print(stats[-1])
@@ -153,6 +182,7 @@ def main():
     model = StackedModel()
     model.fit(*get_eval_data())
     write_results(model)
+
 
 
 if __name__ == "__main__":
