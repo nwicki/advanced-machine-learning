@@ -55,9 +55,10 @@ def train(X, y, model):
 def get_test_data():
     data = pandas.read_csv("X_test.csv")
     X = data.loc[:, "x0":].to_numpy()
-    X = impute_missing_values_simple(X)
-    X = min_max_scale(X)
+    X = feature_selection_variance(X, reset=False)
+    X = impute_missing_values_simple(X, reset=False)
     X = feature_selection_regressor(X, reset=False)
+    X = min_max_scale(X, reset=False)
     return X
 
 
