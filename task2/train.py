@@ -1,9 +1,7 @@
 import numpy as np
 import pandas as pd
-import sklearn.base
-from sklearn.metrics import f1_score
-from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet, SGDRegressor, BayesianRidge
-from sklearn.svm import SVR
+from sklearn.metrics import make_scorer, f1_score
+from sklearn.svm import SVR, SVC
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor, AdaBoostRegressor, \
     HistGradientBoostingRegressor, IsolationForest, StackingRegressor
@@ -13,7 +11,6 @@ from sklearn.model_selection import train_test_split, cross_validate, GridSearch
 from sklearn.impute import SimpleImputer, IterativeImputer
 from sklearn.preprocessing import RobustScaler, MinMaxScaler
 from sklearn.feature_selection import SelectPercentile, VarianceThreshold
-import pandas
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
@@ -26,6 +23,7 @@ import biosppy.signals.ecg as ecg
 
 TRAINING_DATA_X = ""
 TRAINING_DATA_y = ""
+SCORER = make_scorer(f1_score, average='micro')
 
 
 def StackedModel():
@@ -53,13 +51,13 @@ def StackedModel():
 
 def write_results(model):
     y_pred = model.predict(get_test_data())
-    df = pandas.DataFrame(y_pred, columns=["y"])
+    df = pd.DataFrame(y_pred, columns=["y"])
     df.to_csv("submission.csv", index_label="id")
 
 
 def test(X, y, model):
     y_pred = model.predict(X)
-    return f1_score(y_pred, y, average='micro')
+    return SCORER(y_pred, y)
 
 
 def train(X, y, model):
@@ -68,7 +66,7 @@ def train(X, y, model):
 
 
 def get_test_data():
-    data = pandas.read_csv("X_test.csv")
+    data = pd.read_csv("X_test.csv")
     X = data.iloc[:, 1:].to_numpy()
     X = feature_selection_variance(X, reset=False)
     X = impute_missing_values_simple(X, reset=False)
@@ -78,8 +76,8 @@ def get_test_data():
 
 
 def read_train_data():
-    X_data = pandas.read_csv(TRAINING_DATA_X)
-    y_data = pandas.read_csv(TRAINING_DATA_y)
+    X_data = pd.read_csv(TRAINING_DATA_X)
+    y_data = pd.read_csv(TRAINING_DATA_y)
     X = X_data.iloc[:, 1:].to_numpy()
     y = y_data["y"].to_numpy()
     return X, y
@@ -87,20 +85,20 @@ def read_train_data():
 
 def get_preprocessed_data():
     X, y = read_train_data()
-    X = extract_features(X)
-    X = feature_selection_variance(X)
-    X = impute_missing_values_simple(X)
-    X = feature_selection_regressor(X, y)
-    X = min_max_scale(X)
-    X, y = remove_outliers(X, y)
+    X, y = extract_features(X, y)
+    # X = feature_selection_variance(X)
+    # X = impute_missing_values_simple(X)
+    # X = feature_selection_regressor(X, y)
+    # X = min_max_scale(X)
+    # X, y = remove_outliers(X, y)
     return X, y
 
 
 def cache_impute_result():
-    X_data = pandas.read_csv(TRAINING_DATA_X)
+    X_data = pd.read_csv(TRAINING_DATA_X)
     X = X_data.iloc[:, 1:].to_numpy()
     X = impute_missing_values_iterative(X)
-    pandas.DataFrame(data=X, columns=X_data.columns[1:]).to_csv("X_train_cached_estimators_100.csv", index=True, index_label='id')
+    pd.DataFrame(data=X, columns=X_data.columns[1:]).to_csv("X_train_cached_estimators_100.csv", index=True, index_label='id')
 
 
 def get_split_data():
@@ -108,22 +106,22 @@ def get_split_data():
     return train_test_split(X, y, test_size=0.1)
 
 
-def extract_features(X, reset=True):
-    features = []
+def extract_features(X, y, reset=True):
+    X_new = []
+    y_new = []
     sampling_rate = 300
-    for x in X:
+    for i, x in enumerate(X):
         x = x[~np.isnan(x)]
         r_peaks, = ecg.engzee_segmenter(x, sampling_rate)
         if len(r_peaks) >= 2:
-            #print(ecg.extract_heartbeats(signal, r_peaks, 300))
             beats, _ = ecg.extract_heartbeats(x, r_peaks, sampling_rate)
-            print(beats)
-            exit()
             if len(beats) != 0:
                 mu = np.mean(beats, axis=0)
                 var = np.std(beats, axis=0)
                 md = np.median(beats, axis=0)
-
+                X_new.append(var)
+                y_new.append(y[i])
+    return np.array(X_new), np.array(y_new)
 
 MIN_MAX_SCALER = None
 
@@ -249,12 +247,10 @@ def main():
     TRAINING_DATA_y = "y_train_partial.csv"
     print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
+    model = SVC()
     X, y = get_preprocessed_data()
-    # model = StackedModel()
-    # name = type(model).__name__
-    # X, y = get_preprocessed_data()
-    # scores = cross_validate(model, X, y, cv=10, scoring='r2', n_jobs=-1)["test_score"]
-    # print(f'Validation Score: {sum(scores) / len(scores)}')
+    scores = cross_validate(model, X, y, cv=10, scoring=SCORER, n_jobs=-1)["test_score"]
+    print(f'Validation Score: {sum(scores) / len(scores)}')
     # model.fit(*get_preprocessed_data())
     # write_results(model)
     end = time.perf_counter()
