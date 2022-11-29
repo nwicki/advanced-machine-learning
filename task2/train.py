@@ -20,6 +20,8 @@ import time
 import numpy
 import datetime
 import biosppy.signals.ecg as ecg
+from matplotlib.pyplot import plot, show
+import neurokit2 as nk
 
 TRAINING_DATA_X = ""
 TRAINING_DATA_y = ""
@@ -85,7 +87,7 @@ def read_train_data():
 
 def get_preprocessed_data():
     X, y = read_train_data()
-    X, y = extract_features(X, y)
+    X, y = extract_features_neurokit(X, y)
     # X = feature_selection_variance(X)
     # X = impute_missing_values_simple(X)
     # X = feature_selection_regressor(X, y)
@@ -106,6 +108,57 @@ def get_split_data():
     return train_test_split(X, y, test_size=0.1)
 
 
+def plot_values(values, markers=None):
+    x = list(range(len(values)))
+    y = values
+    if markers is None:
+        plot(x, y)
+    else:
+        plot(x, y, '-gD', markevery=markers)
+    show()
+
+
+def extract_features_neurokit(X, y, reset=True):
+    X_new = []
+    y_new = []
+    sampling_rate = 300
+    for i, x in enumerate(X):
+        x = x[~np.isnan(x)]
+        _, rpeaks = nk.ecg_peaks(x, sampling_rate)
+        _, waves = nk.ecg_delineate(x, rpeaks, sampling_rate, method='dwt')
+        func = np.mean
+        p_index = np.array(waves["ECG_P_Peaks"])
+        q_index = np.array(waves["ECG_Q_Peaks"])
+        r_index = np.array(rpeaks["ECG_R_Peaks"])
+        s_index = np.array(waves["ECG_S_Peaks"])
+        t_index = np.array(waves["ECG_T_Peaks"])
+        np.argwhere()
+        print(t_index - p_index)
+        print(t_index[-1])
+        print(p_index[-1])
+        # print(len(waves["ECG_P_Peaks"]))
+        # print(len(waves["ECG_Q_Peaks"]))
+        # print(len(waves["ECG_S_Peaks"]))
+        # print(len(waves["ECG_T_Peaks"]))
+        # dict_keys(['ECG_P_Peaks', 'ECG_P_Onsets', 'ECG_P_Offsets', 'ECG_Q_Peaks', 'ECG_R_Onsets', 'ECG_R_Offsets', 'ECG_S_Peaks', 'ECG_T_Peaks', 'ECG_T_Onsets', 'ECG_T_Offsets'])
+        exit()
+    return np.array(X_new), np.array(y_new)
+
+
+def PQRST_features(heartbeat):
+    search_interval = 30
+    R = np.argmax(heartbeat)
+    Q = R - search_interval + np.argmin(heartbeat[R - search_interval:R])
+    P = np.argmax(heartbeat[:Q])
+    S = R + np.argmin(heartbeat[R:R + search_interval])
+    T = S + np.argmax(heartbeat[S:])
+    QS = S - Q
+    PR = Q - P
+    ST = T - S
+    QT = T - Q
+    return np.array([P, Q, R, S, T, QS, PR, ST, QT])
+
+
 def extract_features(X, y, reset=True):
     X_new = []
     y_new = []
@@ -119,7 +172,19 @@ def extract_features(X, y, reset=True):
                 mu = np.mean(beats, axis=0)
                 var = np.std(beats, axis=0)
                 md = np.median(beats, axis=0)
-                X_new.append(var)
+                ref = mu
+                R = np.argmax(ref)
+                print(f"Max index R: {R}")
+                Q = R - search_interval + np.argmin(ref[R - search_interval:R])
+                print(f"Min index start Q: {Q}")
+                P = np.argmax(ref[:Q])
+                print(f"Max index start P: {P}")
+                S = R + np.argmin(ref[R:R + search_interval])
+                print(f"Min index end S: {S}")
+                T = S + np.argmax(ref[S:])
+                print(f"Max index end T: {T}")
+                PQRST = ref[[P, Q, R, S, T]]
+                X_new.append(mu)
                 y_new.append(y[i])
     return np.array(X_new), np.array(y_new)
 
