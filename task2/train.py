@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 import pandas as pd
 from sklearn.metrics import make_scorer, f1_score
@@ -124,24 +125,57 @@ def extract_features_neurokit(X, y, reset=True):
     sampling_rate = 300
     for i, x in enumerate(X):
         x = x[~np.isnan(x)]
-        _, rpeaks = nk.ecg_peaks(x, sampling_rate)
-        _, waves = nk.ecg_delineate(x, rpeaks, sampling_rate, method='dwt')
-        func = np.mean
-        p_index = np.array(waves["ECG_P_Peaks"])
-        q_index = np.array(waves["ECG_Q_Peaks"])
+        ecg_cleaned = nk.ecg_clean(x, sampling_rate)
+        _, rpeaks = nk.ecg_peaks(ecg_cleaned, sampling_rate)
         r_index = np.array(rpeaks["ECG_R_Peaks"])
+        heartbeats = nk.ecg_segment(ecg_cleaned, sampling_rate=sampling_rate)
+        # Assume heartbeats exist
+        _, heartbeat = next(iter(heartbeats.items()))
+        assert heartbeat is not None
+        # Assume heartbeats have same length with the same R peak index
+        assumed_length = len(heartbeat)
+        agg_heartbeat = []
+        for k, v in heartbeats.items():
+            assert len(v) == assumed_length
+            agg_heartbeat.append(v.iloc[:, 0].to_numpy())
+        agg_heartbeat = np.array(agg_heartbeat)
+        # Get the same R peak local index for every heartbeat
+        agg_heartbeat = agg_heartbeat[detect_non_majority_votes(np.argmax(agg_heartbeat, axis=1))]
+        r_index_local = np.argmax(agg_heartbeat[0])
+        # Get PQ(R)ST peak indices
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate)
+        p_index = np.array(waves["ECG_P_Peaks"])
+        outlier_mask = ~np.isnan(p_index)
+        q_index = np.array(waves["ECG_Q_Peaks"])
+        outlier_mask = outlier_mask & ~np.isnan(q_index)
         s_index = np.array(waves["ECG_S_Peaks"])
+        outlier_mask = outlier_mask & ~np.isnan(s_index)
         t_index = np.array(waves["ECG_T_Peaks"])
-        np.argwhere()
-        print(t_index - p_index)
-        print(t_index[-1])
-        print(p_index[-1])
-        # print(len(waves["ECG_P_Peaks"]))
-        # print(len(waves["ECG_Q_Peaks"]))
-        # print(len(waves["ECG_S_Peaks"]))
-        # print(len(waves["ECG_T_Peaks"]))
-        # dict_keys(['ECG_P_Peaks', 'ECG_P_Onsets', 'ECG_P_Offsets', 'ECG_Q_Peaks', 'ECG_R_Onsets', 'ECG_R_Offsets', 'ECG_S_Peaks', 'ECG_T_Peaks', 'ECG_T_Onsets', 'ECG_T_Offsets'])
-        exit()
+        outlier_mask = outlier_mask & ~np.isnan(t_index)
+        # Compute local peaks in reference to local R index
+        agg_p, agg_q, agg_s, agg_t = [], [], [], []
+        for p, q, r, s, t in zip(p_index[outlier_mask],
+                                 q_index[outlier_mask],
+                                 r_index[outlier_mask],
+                                 s_index[outlier_mask],
+                                 t_index[outlier_mask]):
+            diff_rp = r - p
+            diff_rq = r - q
+            diff_sr = s - r
+            diff_tr = t - r
+            agg_p.append(r_index_local - diff_rp)
+            agg_q.append(r_index_local - diff_rq)
+            agg_s.append(r_index_local + diff_sr)
+            agg_t.append(r_index_local + diff_tr)
+        # Get average metrics for local values
+        avg_heartbeat = np.mean(agg_heartbeat, axis=0)
+        p_index_local = np.mean(np.array(agg_p))
+        q_index_local = np.mean(np.array(agg_q))
+        s_index_local = np.mean(np.array(agg_s))
+        t_index_local = np.mean(np.array(agg_t))
+    exit()
     return np.array(X_new), np.array(y_new)
 
 
@@ -163,6 +197,7 @@ def extract_features(X, y, reset=True):
     X_new = []
     y_new = []
     sampling_rate = 300
+    search_interval = 30
     for i, x in enumerate(X):
         x = x[~np.isnan(x)]
         r_peaks, = ecg.engzee_segmenter(x, sampling_rate)
@@ -234,6 +269,21 @@ def impute_missing_values_iterative(X, reset=True):
     end = time.perf_counter()
     print(f'Iterative imputation - runtime: {end-start} s')
     return ITERATIVE_IMPUTER.transform(X)
+
+
+def detect_non_majority_votes(X):
+    values, counts = np.unique(X, return_counts=True)
+    majority = values[np.argmax(counts)]
+    mask = X == majority
+    return mask
+
+
+def detect_outliers_X(X, outliers=0.0625):
+    model = IsolationForest(contamination=outliers, n_jobs=-1)
+    model.fit(X)
+    decision = model.predict(X)
+    mask = 0 <= decision
+    return mask
 
 
 def remove_outliers(X, y, outliers=0.0625):
