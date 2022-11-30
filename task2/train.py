@@ -104,6 +104,38 @@ def plot_values(values, markers=None):
         plot(x, y, '-gD', markevery=markers)
     show()
 
+def PQRST_features(ecg_points):
+    # R_Peak
+    r_amplitude = ecg_points[5]
+    # Q_Peak
+    q_amplitude = ecg_points[4]
+    # P_Onset to R_Onset
+    pr_interval = ecg_points[3] - ecg_points[0]
+    # P_Offset to R_Onset
+    pr_segment = ecg_points[2] - ecg_points[0]
+    # Q_Peak to S_Peak
+    qrs_complex = ecg_points[-4] - ecg_points[4]
+    # Q_Peak to T_Offset
+    qt_interval = ecg_points[-1] - ecg_points[4]
+    # R_Offset to T_Onset
+    st_segment = ecg_points[-3] - ecg_points[-5]
+    # RS Ratio
+    rs_ratio = (ecg_points[-4] / ecg_points[5]) if ecg_points[5] != 0 else 0
+    # QRS amplitude
+    qrs_amplitude = ecg_points[4] + ecg_points[5] + ecg_points[7]
+
+    features = np.array([
+        r_amplitude,
+        q_amplitude,
+        pr_interval,
+        pr_segment,
+        qrs_complex,
+        qt_interval,
+        st_segment,
+        rs_ratio,
+        qrs_amplitude
+    ])
+    return features
 
 def PQRST_feature_extraction(waves, rpeaks):
     ecg_points = np.array(list(zip(
@@ -120,46 +152,30 @@ def PQRST_feature_extraction(waves, rpeaks):
         waves["ECG_T_Offsets"])))
 
     rpeaks = ecg_points[:, 5]
-    rr_interval = np.mean(rpeaks[1:] - rpeaks[:-1])
+    rr_interval = rpeaks[1:] - rpeaks[:-1]
+    rr_interval = np.array([
+        np.mean(rr_interval),
+        np.median(rr_interval),
+        np.min(rr_interval),
+        np.max(rr_interval),
+        np.std(rr_interval)
+    ])
 
     ref_r = ecg_points[0, 5]
     r_offset = np.repeat(rpeaks.reshape(-1, 1) - ref_r, ecg_points.shape[1], axis=1)
     ecg_points -= r_offset
     ecg_points = impute_mean_values(ecg_points)
     ecg_points = ecg_points[local_outlier_detection(ecg_points)]
-    ecg_points = np.mean(ecg_points, axis=0)
 
-    # R_Peak
-    r_amplitude = ecg_points[5]
-    # Q_Peak
-    q_amplitude = ecg_points[4]
-    # P_Onset to R_Onset
-    pr_interval = ecg_points[3] - ecg_points[0]
-    # P_Offset to R_Onset
-    pr_segment = ecg_points[2] - ecg_points[0]
-    # Q_Peak to S_Peak
-    qrs_complex = ecg_points[-4] - ecg_points[4]
-    # Q_Peak to T_Offset
-    qt_interval = ecg_points[-1] - ecg_points[4]
-    # R_Offset to T_Onset
-    st_segment = ecg_points[-3] - ecg_points[-5]
-    # RS Ratio
-    rs_ratio = ecg_points[-4] / ecg_points[5]
-    # QRS amplitude
-    qrs_amplitude = ecg_points[4] + ecg_points[5] + ecg_points[7]
+    features = np.concatenate((
+        PQRST_features(np.mean(ecg_points, axis=0)),
+        PQRST_features(np.median(ecg_points, axis=0)),
+        PQRST_features(np.min(ecg_points, axis=0)),
+        PQRST_features(np.max(ecg_points, axis=0)),
+        PQRST_features(np.std(ecg_points, axis=0)),
+        rr_interval
+    ))
 
-    features = np.array([
-        r_amplitude,
-        q_amplitude,
-        rr_interval,
-        pr_interval,
-        pr_segment,
-        qrs_complex,
-        qt_interval,
-        st_segment,
-        rs_ratio,
-        qrs_amplitude
-    ])
     return features
 
 
