@@ -12,10 +12,10 @@ from sklearn.model_selection import train_test_split, cross_validate, GridSearch
 from sklearn.impute import SimpleImputer, IterativeImputer
 from sklearn.preprocessing import RobustScaler, MinMaxScaler
 from sklearn.feature_selection import SelectPercentile, VarianceThreshold
-from xgboost import XGBRegressor
+from xgboost import XGBRegressor, XGBClassifier
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
-from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neighbors import KNeighborsRegressor, LocalOutlierFactor
 from sklearn.neural_network import MLPRegressor
 import time
 import numpy
@@ -58,16 +58,6 @@ def write_results(model):
     df.to_csv("submission.csv", index_label="id")
 
 
-def test(X, y, model):
-    y_pred = model.predict(X)
-    return SCORER(y_pred, y)
-
-
-def train(X, y, model):
-    model.fit(X, y)
-    return model
-
-
 def get_test_data():
     data = pd.read_csv("X_test.csv")
     X = data.iloc[:, 1:].to_numpy()
@@ -88,25 +78,13 @@ def read_train_data():
 
 def get_preprocessed_data():
     X, y = read_train_data()
-    X, y = extract_features_neurokit(X, y)
-    # X = feature_selection_variance(X)
-    # X = impute_missing_values_simple(X)
+    X, y = extract_features(X, y)
+    X = feature_selection_variance(X)
+    X = impute_missing_values_simple(X)
     # X = feature_selection_regressor(X, y)
     # X = min_max_scale(X)
     # X, y = remove_outliers(X, y)
     return X, y
-
-
-def cache_impute_result():
-    X_data = pd.read_csv(TRAINING_DATA_X)
-    X = X_data.iloc[:, 1:].to_numpy()
-    X = impute_missing_values_iterative(X)
-    pd.DataFrame(data=X, columns=X_data.columns[1:]).to_csv("X_train_cached_estimators_100.csv", index=True, index_label='id')
-
-
-def get_split_data():
-    X, y = get_preprocessed_data()
-    return train_test_split(X, y, test_size=0.1)
 
 
 def plot_values(values, markers=None):
@@ -119,14 +97,10 @@ def plot_values(values, markers=None):
     show()
 
 
-def extract_features_neurokit(X, y, reset=True):
+def extract_features(X, Y = None):
     X_new = []
-    y_new = []
+    Y_new = []
     sampling_rate = 300
-    min_r = 2e26
-    max_length_interval = 0
-    minimal_heartbeats = 2e26
-    no_heartbeats = 0
     for i, x in enumerate(X):
         x = x[~np.isnan(x)]
         rpeaks, = ecg.engzee_segmenter(x, sampling_rate)
@@ -143,119 +117,82 @@ def extract_features_neurokit(X, y, reset=True):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate)
+            try:
+                _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate)
+                # Heart Rate Variability in time, frequency, and non-linear domain
+                hrv_indices = nk.hrv(rpeaks, sampling_rate).iloc[0, :].to_numpy()
+            except (KeyError, ValueError):
+                continue
 
-        P_onsets = np.array(waves["ECG_P_Onsets"])
-        outlier_mask = ~np.isnan(P_onsets)
+        ecg_points = np.array(list(zip(
+            waves["ECG_P_Onsets"],
+            waves["ECG_P_Peaks"],
+            waves["ECG_P_Offsets"],
+            waves["ECG_R_Onsets"],
+            waves["ECG_Q_Peaks"],
+            rpeaks["ECG_R_Peaks"],
+            waves["ECG_R_Offsets"],
+            waves["ECG_S_Peaks"],
+            waves["ECG_T_Onsets"],
+            waves["ECG_T_Peaks"],
+            waves["ECG_T_Offsets"])))
 
-        P_peaks = np.array(waves["ECG_P_Peaks"])
-        outlier_mask = ~np.isnan(P_peaks) & outlier_mask
+        rpeaks = ecg_points[:, 5]
+        rr_interval = np.mean(rpeaks[1:] - rpeaks[:-1])
 
-        P_offsets = np.array(waves["ECG_P_Offsets"])
-        outlier_mask = ~np.isnan(P_offsets) & outlier_mask
-
-        R_onsets = np.array(waves["ECG_R_Onsets"])
-        outlier_mask = ~np.isnan(R_onsets) & outlier_mask
-
-        Q_peaks = np.array(waves["ECG_Q_Peaks"])
-        outlier_mask = ~np.isnan(Q_peaks) & outlier_mask
-
-        R_peaks = np.array(rpeaks["ECG_R_Peaks"])
-        outlier_mask = ~np.isnan(R_peaks) & outlier_mask
-
-        R_offsets = np.array(waves["ECG_R_Offsets"])
-        outlier_mask = ~np.isnan(R_offsets) & outlier_mask
-
-        S_peaks = np.array(waves["ECG_S_Peaks"])
-        outlier_mask = ~np.isnan(S_peaks) & outlier_mask
-
-        T_onsets = np.array(waves["ECG_T_Onsets"])
-        outlier_mask = ~np.isnan(T_onsets) & outlier_mask
-
-        T_peaks = np.array(waves["ECG_T_Peaks"])
-        outlier_mask = ~np.isnan(T_peaks) & outlier_mask
-
-        T_offsets = np.array(waves["ECG_T_Offsets"])
-        outlier_mask = ~np.isnan(T_offsets) & outlier_mask
-
-        min_r = min(np.min(R_peaks), min_r)
-
-        P_onsets = P_onsets[outlier_mask]
-        P_peaks = P_peaks[outlier_mask]
-        P_offsets = P_offsets[outlier_mask]
-        R_onsets = R_onsets[outlier_mask]
-        Q_peaks = Q_peaks[outlier_mask]
-        R_peaks = R_peaks[outlier_mask]
-        R_offsets = R_offsets[outlier_mask]
-        S_peaks = S_peaks[outlier_mask]
-        T_onsets = T_onsets[outlier_mask]
-        T_peaks = T_peaks[outlier_mask]
-        T_offsets = T_offsets[outlier_mask]
-
-        if len(R_peaks) == 0:
-            continue
-
-        intervals = []
-        for i, (pon, pp, poff, ron, qp, rp, sp, roff, ton, tp, toff) in enumerate(zip(
-                P_onsets, P_peaks, P_offsets, R_onsets, Q_peaks, R_peaks,
-                S_peaks, R_offsets, T_onsets, T_peaks, T_offsets)):
-            intervals.append(toff - pon)
-        max_length_interval = max(np.max(intervals), max_length_interval)
-        filtered = len(list(filter(lambda val: val < 300, intervals)))
-        no_heartbeats += filtered == 0
-        minimal_heartbeats = min(filtered, minimal_heartbeats)
-
-    print(f"Minimal peak location: {min_r}")
-    print(f"Maximal heartbeat length: {max_length_interval}")
-    print(f"Minimal amount of heartbeats: {minimal_heartbeats}")
-    print(f"No heartbeats: {no_heartbeats}")
-    exit()
-    return np.array(X_new), np.array(y_new)
+        ref_r = ecg_points[0, 5]
+        r_offset = np.repeat(rpeaks.reshape(-1, 1) - ref_r, ecg_points.shape[1], axis=1)
+        ecg_points -= r_offset
+        ecg_points = impute_mean_values(ecg_points)
+        ecg_points = ecg_points[local_outlier_detection(ecg_points)]
+        ecg_points = np.mean(ecg_points, axis=0)
 
 
-def PQRST_features(heartbeat):
-    search_interval = 30
-    R = np.argmax(heartbeat)
-    Q = R - search_interval + np.argmin(heartbeat[R - search_interval:R])
-    P = np.argmax(heartbeat[:Q])
-    S = R + np.argmin(heartbeat[R:R + search_interval])
-    T = S + np.argmax(heartbeat[S:])
-    QS = S - Q
-    PR = Q - P
-    ST = T - S
-    QT = T - Q
-    return np.array([P, Q, R, S, T, QS, PR, ST, QT])
+        # R_Peak
+        r_amplitude = ecg_points[5]
+        # Q_Peak
+        q_amplitude = ecg_points[4]
+        # P_Onset to R_Onset
+        pr_interval = ecg_points[3] - ecg_points[0]
+        # P_Offset to R_Onset
+        pr_segment = ecg_points[2] - ecg_points[0]
+        # Q_Peak to S_Peak
+        qrs_complex = ecg_points[-4] - ecg_points[4]
+        # Q_Peak to T_Offset
+        qt_interval = ecg_points[-1] - ecg_points[4]
+        # R_Offset to T_Onset
+        st_segment = ecg_points[-3] - ecg_points[-5]
+        # RS Ratio
+        rs_ratio = ecg_points[-4] / ecg_points[5]
+        # QRS amplitude
+        qrs_amplitude = ecg_points[4] + ecg_points[5] + ecg_points[7]
 
+        features = np.array([
+            r_amplitude,
+            q_amplitude,
+            rr_interval,
+            pr_interval,
+            pr_segment,
+            qrs_complex,
+            qt_interval,
+            st_segment,
+            rs_ratio,
+            qrs_amplitude
+        ])
 
-def extract_features(X, y, reset=True):
-    X_new = []
-    y_new = []
-    sampling_rate = 300
-    search_interval = 30
-    for i, x in enumerate(X):
-        x = x[~np.isnan(x)]
-        r_peaks, = ecg.engzee_segmenter(x, sampling_rate)
-        if len(r_peaks) >= 2:
-            beats, _ = ecg.extract_heartbeats(x, r_peaks, sampling_rate)
-            if len(beats) != 0:
-                mu = np.mean(beats, axis=0)
-                var = np.std(beats, axis=0)
-                md = np.median(beats, axis=0)
-                ref = mu
-                R = np.argmax(ref)
-                print(f"Max index R: {R}")
-                Q = R - search_interval + np.argmin(ref[R - search_interval:R])
-                print(f"Min index start Q: {Q}")
-                P = np.argmax(ref[:Q])
-                print(f"Max index start P: {P}")
-                S = R + np.argmin(ref[R:R + search_interval])
-                print(f"Min index end S: {S}")
-                T = S + np.argmax(ref[S:])
-                print(f"Max index end T: {T}")
-                PQRST = ref[[P, Q, R, S, T]]
-                X_new.append(mu)
-                y_new.append(y[i])
-    return np.array(X_new), np.array(y_new)
+        # features = np.concatenate((features, hrv_indices))
+
+        X_new.append(features)
+        if Y is not None:
+            Y_new.append(Y[i])
+
+    X_new = np.array(X_new)
+
+    if Y is None:
+        return X_new
+
+    return np.array(X_new), np.array(Y_new)
+
 
 MIN_MAX_SCALER = None
 
@@ -278,6 +215,10 @@ def robust_scale(X, reset=True):
         ROBUST_SCALER.fit(X)
     return ROBUST_SCALER.transform(X)
 
+
+def impute_mean_values(X):
+    model = SimpleImputer(strategy="mean")
+    return model.fit_transform(X)
 
 SIMPLE_IMPUTER = None
 
@@ -309,6 +250,13 @@ def detect_non_majority_votes(X):
     values, counts = np.unique(X, return_counts=True)
     majority = values[np.argmax(counts)]
     mask = X == majority
+    return mask
+
+
+def local_outlier_detection(X):
+    model = LocalOutlierFactor(n_neighbors=min(len(X), 20), n_jobs=-1)
+    decision = model.fit_predict(X)
+    mask = 0 <= decision
     return mask
 
 
@@ -391,9 +339,9 @@ def feature_selection_regressor(X, y=None, threshold=0.1, reset=True):
 
 def main():
     global TRAINING_DATA_X
-    TRAINING_DATA_X = "X_train.csv"
+    TRAINING_DATA_X = "X_train_partial.csv"
     global TRAINING_DATA_y
-    TRAINING_DATA_y = "y_train.csv"
+    TRAINING_DATA_y = "y_train_partial.csv"
     print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
     model = SVC()
