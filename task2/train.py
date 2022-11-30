@@ -82,7 +82,7 @@ def write_train_data(X, y):
     pd.DataFrame(data=y, columns=["y"]).to_csv("y_train_extracted.csv", index=True, index_label='id')
 
 
-def get_preprocessed_data(extract=True):
+def get_preprocessed_data(param, extract=True):
     X, y = read_train_data()
     if extract:
         X, y = extract_features(X, y)
@@ -91,7 +91,7 @@ def get_preprocessed_data(extract=True):
     X = impute_missing_values_simple(X)
     X = feature_selection_regressor(X, y)
     X = min_max_scale(X)
-    X, y = remove_outliers(X, y)
+    X, y = remove_outliers(X, y, outliers=param)
     return X, y
 
 
@@ -314,7 +314,7 @@ def remove_outliers(X, y, outliers=0.0625):
 SELECTOR_VARIANCE = None
 
 
-def feature_selection_variance(X, threshold=0.001, reset=True):
+def feature_selection_variance(X, threshold=0.6, reset=True):
     global SELECTOR_VARIANCE
     if reset:
         SELECTOR_VARIANCE = VarianceThreshold(threshold)
@@ -348,7 +348,7 @@ def feature_selection_percentile(X, y=None, reset=True):
 SELECTOR_REGRESSOR = None
 
 
-def feature_selection_regressor(X, y=None, threshold=0.8, reset=True):
+def feature_selection_regressor(X, y=None, threshold=0.175, reset=True):
     global SELECTOR_REGRESSOR
     if reset:
         selection = int(threshold * X.shape[1])
@@ -377,17 +377,15 @@ def main():
     global TRAINING_DATA_y
     # TRAINING_DATA_y = "y_train_partial.csv"
     TRAINING_DATA_y = "y_train_extracted.csv"
-    print(f'Start time: {datetime.datetime.now()}')
-    start = time.perf_counter()
-    model = SVC()
-    X, y = get_preprocessed_data(False)
-    scores = cross_validate(model, X, y, cv=10, scoring=SCORER, n_jobs=-1)["test_score"]
-    print(f'Validation Score: {sum(scores) / len(scores)}')
-    # model.fit(*get_preprocessed_data())
-    # write_results(model)
-    end = time.perf_counter()
-    print(f'End time: {datetime.datetime.now()}')
-    print(f'Runtime: {end - start} s')
+    # print(f'Start time: {datetime.datetime.now()}')
+    # start = time.perf_counter()
+    # model = SVC()
+    # X, y = get_preprocessed_data(False)
+    # scores = cross_validate(model, X, y, cv=10, scoring=SCORER, n_jobs=-1)["test_score"]
+    # print(f'Validation Score: {sum(scores) / len(scores)}')
+    # end = time.perf_counter()
+    # print(f'End time: {datetime.datetime.now()}')
+    # print(f'Runtime: {end - start} s')
     # model_start = time.perf_counter()
     # model = CatBoostRegressor(logging_level='Silent')
     # model.fit(X, y)
@@ -413,18 +411,17 @@ def main():
     # print(f'{name} - RandomizedSearch Runtime: {end - start} s')
     # print(f'{name} Best Score: {clf.best_score_}')
     # print(f'{name} Best Parameters: {clf.best_params_}')
-    # stats = []
-    # param_space = [0.05, 0.0625, 0.075, 0.0875, 0.1]
-    # for param in param_space:
-    #     X, y = get_preprocessed_data(param)
-    #     model = SVR(kernel='rbf', C=9, degree=2, tol=1e-2, epsilon=1)
-    #     # model = StackedModel()
-    #     start = time.perf_counter()
-    #     scores = cross_validate(model, X, y, cv=10, scoring='r2', n_jobs=-1)["test_score"]
-    #     end = time.perf_counter()
-    #     stats.append((sum(scores) / len(scores), type(model).__name__, end - start, param))
-    #     print(stats[-1])
-    # print(f'Max: {stats[numpy.argmax([x[0] for x in stats])]}')
+    stats = []
+    param_space = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
+    for param in param_space:
+        X, y = get_preprocessed_data(param, False)
+        model = SVC()
+        start = time.perf_counter()
+        scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
+        end = time.perf_counter()
+        stats.append((sum(scores) / len(scores), end - start, param))
+        print(stats[-1])
+    print(f'Max: {stats[numpy.argmax([x[0] for x in stats])]}')
 
 
 if __name__ == "__main__":
