@@ -29,29 +29,6 @@ TRAINING_DATA_y = ""
 SCORER = make_scorer(f1_score, average='micro')
 
 
-def StackedModel():
-    estimators = [
-        # ('kn', KNeighborsRegressor(weights='distance', p=1, n_neighbors=4, n_jobs=-1, leaf_size=1, algorithm='auto')),
-        ('lgbm', LGBMRegressor(
-            subsample_freq=1, subsample_for_bin=400000, subsample=0.5, reg_lambda=0.5, reg_alpha=3, num_leaves=16,
-            n_jobs=-1, n_estimators=3000, min_split_gain=0.025, min_child_weight=2, min_child_samples=8, max_depth=8,
-            learning_rate=0.01, colsample_bytree=0.7, boosting_type='gbdt')),
-        ('gb', GradientBoostingRegressor(
-            subsample=0.9, n_estimators=2250, min_samples_split=0.3, min_samples_leaf=0.05, min_impurity_decrease=0.1,
-            max_depth=9, loss='squared_error', learning_rate=0.01, criterion='friedman_mse')),
-        ('svr', SVR(epsilon=1.5, C=49, cache_size=2048)),
-        # ('rf', RandomForestRegressor(n_estimators=500, max_depth=8, n_jobs=-1)),
-        # ('xt', ExtraTreesRegressor(n_estimators=400, max_depth=8, n_jobs=-1)),
-        ('xgb', XGBRegressor(subsample=0.4, reg_lambda=0.25, reg_alpha=1, n_estimators=3500,
-                             max_depth=7, learning_rate=0.01, colsample_bytree=0.6, n_jobs=-1)),
-        # ('ada', AdaBoostRegressor(n_estimators=2000)),
-        # ('hgb', HistGradientBoostingRegressor(max_iter=550, min_samples_leaf=28, max_leaf_nodes=17)),
-        # ('cat,', CatBoostRegressor(depth=6, learning_rate=0.1, l2_leaf_reg=7, logging_level='Silent')),
-        # ('gp', GaussianProcessRegressor(kernel=DotProduct() + WhiteKernel())),
-        # ('br', BayesianRidge(alpha_1=1e-07, alpha_2=1e-05, lambda_1=1e-05, lambda_2=1e-07, n_iter=300)),
-    ]
-    return StackingRegressor(estimators=estimators, cv=10, n_jobs=-1)
-
 def write_results(model):
     y_pred = model.predict(get_test_data())
     df = pd.DataFrame(y_pred, columns=["y"])
@@ -61,10 +38,11 @@ def write_results(model):
 def get_test_data():
     data = pd.read_csv("X_test.csv")
     X = data.iloc[:, 1:].to_numpy()
-    X = feature_selection_variance(X, reset=False)
+    X = extract_features(X)
     X = impute_missing_values_simple(X, reset=False)
-    X = feature_selection_regressor(X, reset=False)
     X = min_max_scale(X, reset=False)
+    X = feature_selection_variance(X, reset=False)
+    X = feature_selection_regressor(X, reset=False)
     return X
 
 
@@ -82,16 +60,16 @@ def write_train_data(X, y):
     pd.DataFrame(data=y, columns=["y"]).to_csv("y_train_extracted.csv", index=True, index_label='id')
 
 
-def get_preprocessed_data(param, extract=True):
+def get_preprocessed_data(extract=True):
     X, y = read_train_data()
     if extract:
         X, y = extract_features(X, y)
         write_train_data(X, y)
-    X = feature_selection_variance(X)
     X = impute_missing_values_simple(X)
-    X = feature_selection_regressor(X, y)
     X = min_max_scale(X)
-    X, y = remove_outliers(X, y, outliers=param)
+    X = feature_selection_variance(X)
+    X = feature_selection_regressor(X, y)
+    X, y = remove_outliers(X, y)
     return X, y
 
 
@@ -104,25 +82,44 @@ def plot_values(values, markers=None):
         plot(x, y, '-gD', markevery=markers)
     show()
 
-def PQRST_features(ecg_points):
+
+def pqrst_features(ecg, ecg_points, ecg_points_adjusted, func):
+    # Compress adjusted ecg_points over all signals
+    ecg_points_compressed = func(ecg_points_adjusted, axis=0)
+    # Use ecg_points as indices
+    ecg_points = np.array(ecg_points, dtype=int)
     # R_Peak
-    r_amplitude = ecg_points[5]
+    r_indices = ecg_points[:, 5]
+    r_indices = r_indices[(0 <= r_indices) & (r_indices < len(ecg))]
+    r_amplitude = func(ecg[r_indices])
     # Q_Peak
-    q_amplitude = ecg_points[4]
+    q_indices = ecg_points[:, 4]
+    q_indices = q_indices[(0 <= q_indices) & (q_indices < len(ecg))]
+    if len(q_indices) == 0:
+        q_amplitude = 0
+    else:
+        q_amplitude = func(ecg[q_indices])
+    # S_Peak
+    s_indices = ecg_points[:, -4]
+    s_indices = s_indices[(0 <= s_indices) & (s_indices < len(ecg))]
+    if len(q_indices) == 0:
+        s_amplitude = 0
+    else:
+        s_amplitude = func(ecg[s_indices])
     # P_Onset to R_Onset
-    pr_interval = ecg_points[3] - ecg_points[0]
+    pr_interval = ecg_points_compressed[3] - ecg_points_compressed[0]
     # P_Offset to R_Onset
-    pr_segment = ecg_points[2] - ecg_points[0]
+    pr_segment = ecg_points_compressed[2] - ecg_points_compressed[0]
     # Q_Peak to S_Peak
-    qrs_complex = ecg_points[-4] - ecg_points[4]
+    qrs_complex = ecg_points_compressed[-4] - ecg_points_compressed[4]
     # Q_Peak to T_Offset
-    qt_interval = ecg_points[-1] - ecg_points[4]
+    qt_interval = ecg_points_compressed[-1] - ecg_points_compressed[4]
     # R_Offset to T_Onset
-    st_segment = ecg_points[-3] - ecg_points[-5]
+    st_segment = ecg_points_compressed[-3] - ecg_points_compressed[-5]
     # RS Ratio
-    rs_ratio = (ecg_points[-4] / ecg_points[5]) if ecg_points[5] != 0 else 0
+    rs_ratio = s_amplitude / r_amplitude
     # QRS amplitude
-    qrs_amplitude = ecg_points[4] + ecg_points[5] + ecg_points[7]
+    qrs_amplitude = q_amplitude + r_amplitude + s_amplitude
 
     features = np.array([
         r_amplitude,
@@ -137,7 +134,8 @@ def PQRST_features(ecg_points):
     ])
     return features
 
-def PQRST_feature_extraction(waves, rpeaks):
+
+def pqrst_feature_extraction(ecg, waves, rpeaks):
     ecg_points = np.array(list(zip(
         waves["ECG_P_Onsets"],
         waves["ECG_P_Peaks"],
@@ -163,16 +161,16 @@ def PQRST_feature_extraction(waves, rpeaks):
 
     ref_r = ecg_points[0, 5]
     r_offset = np.repeat(rpeaks.reshape(-1, 1) - ref_r, ecg_points.shape[1], axis=1)
-    ecg_points -= r_offset
-    ecg_points = impute_mean_values(ecg_points)
-    ecg_points = ecg_points[local_outlier_detection(ecg_points)]
+    ecg_points_adjusted = ecg_points - r_offset
+    ecg_points_adjusted = impute_mean_values(ecg_points_adjusted)
+    ecg_points_adjusted = ecg_points_adjusted[local_outlier_detection(ecg_points_adjusted)]
 
     features = np.concatenate((
-        PQRST_features(np.mean(ecg_points, axis=0)),
-        PQRST_features(np.median(ecg_points, axis=0)),
-        PQRST_features(np.min(ecg_points, axis=0)),
-        PQRST_features(np.max(ecg_points, axis=0)),
-        PQRST_features(np.std(ecg_points, axis=0)),
+        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.mean),
+        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.median),
+        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.min),
+        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.max),
+        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.std),
         rr_interval
     ))
 
@@ -196,26 +194,21 @@ def HRV_feature_extraction(hrv_indices):
     features = [x.iloc[0] for x in features]
     return np.array(features)
 
-def extract_features(X, Y = None):
+
+def extract_features(X, Y = None, test=False):
     X_new = []
     Y_new = []
     sampling_rate = 300
     for i, x in enumerate(X):
+        print(f"Process sample: {i}")
         x = x[~np.isnan(x)]
 
-        # Biosppy Feature Extraction
-        rpeaks, = ecg.engzee_segmenter(x, sampling_rate)
-        if len(rpeaks) < 2:
-            continue
-        beats, _ = ecg.extract_heartbeats(x, rpeaks, sampling_rate)
-        if len(beats) == 0:
-            continue
-        avg_heartbeat = np.mean(beats, axis=0)
-
         # Neurokit Feature Extraction
-        ecg_cleaned = nk.ecg_clean(x, sampling_rate)
+        ecg_cleaned = np.array(nk.ecg_clean(x, sampling_rate))
         _, rpeaks = nk.ecg_peaks(ecg_cleaned, sampling_rate)
         if len(rpeaks["ECG_R_Peaks"]) == 0:
+            if test:
+                raise RuntimeError
             continue
 
         with warnings.catch_warnings():
@@ -225,9 +218,11 @@ def extract_features(X, Y = None):
                 # Heart Rate Variability in time, frequency, and non-linear domain
                 hrv_indices = nk.hrv(rpeaks, sampling_rate)
             except (KeyError, ValueError):
+                if test:
+                    raise RuntimeError
                 continue
 
-        features = PQRST_feature_extraction(waves, rpeaks)
+        features = pqrst_feature_extraction(ecg_cleaned, waves, rpeaks)
         features = np.concatenate((features, HRV_feature_extraction(hrv_indices)))
 
         X_new.append(features)
@@ -279,21 +274,6 @@ def impute_missing_values_simple(X, reset=True):
     return SIMPLE_IMPUTER.transform(X)
 
 
-ITERATIVE_IMPUTER = None
-
-
-def impute_missing_values_iterative(X, reset=True):
-    start = time.perf_counter()
-    global ITERATIVE_IMPUTER
-    if reset:
-        ITERATIVE_IMPUTER = IterativeImputer(
-            estimator=ExtraTreesRegressor(n_estimators=10, n_jobs=-1), initial_strategy="median")
-        ITERATIVE_IMPUTER.fit(X)
-    end = time.perf_counter()
-    print(f'Iterative imputation - runtime: {end-start} s')
-    return ITERATIVE_IMPUTER.transform(X)
-
-
 def local_outlier_detection(X):
     model = LocalOutlierFactor(n_neighbors=min(len(X), 20), n_jobs=-1)
     decision = model.fit_predict(X)
@@ -301,7 +281,7 @@ def local_outlier_detection(X):
     return mask
 
 
-def remove_outliers(X, y, outliers=0.0625):
+def remove_outliers(X, y, outliers=0.5):
     model = IsolationForest(contamination=outliers, n_jobs=-1)
     model.fit(X)
     decision = model.predict(X)
@@ -314,7 +294,7 @@ def remove_outliers(X, y, outliers=0.0625):
 SELECTOR_VARIANCE = None
 
 
-def feature_selection_variance(X, threshold=0.6, reset=True):
+def feature_selection_variance(X, threshold=0.01, reset=True):
     global SELECTOR_VARIANCE
     if reset:
         SELECTOR_VARIANCE = VarianceThreshold(threshold)
@@ -322,33 +302,10 @@ def feature_selection_variance(X, threshold=0.6, reset=True):
     return SELECTOR_VARIANCE.transform(X)
 
 
-SELECTOR_CORRELATION = None
-
-
-def feature_selection_correlation(X, threshold=0.9, reset=True):
-    global SELECTOR_CORRELATION
-    if reset:
-        corr_matrix = numpy.corrcoef(X, rowvar=False)
-        upper = numpy.triu(corr_matrix, k=1)
-        SELECTOR_CORRELATION = numpy.any(upper < threshold, axis=0)
-    return X[:, SELECTOR_CORRELATION]
-
-
-SELECTOR_PERCENTILE = None
-
-
-def feature_selection_percentile(X, y=None, reset=True):
-    global SELECTOR_PERCENTILE
-    if reset:
-        SELECTOR_PERCENTILE = SelectPercentile()
-        SELECTOR_PERCENTILE.fit(X, y)
-    return SELECTOR_PERCENTILE.transform(X)
-
-
 SELECTOR_REGRESSOR = None
 
 
-def feature_selection_regressor(X, y=None, threshold=0.175, reset=True):
+def feature_selection_regressor(X, y=None, threshold=0.475, reset=True):
     global SELECTOR_REGRESSOR
     if reset:
         selection = int(threshold * X.shape[1])
@@ -360,32 +317,34 @@ def feature_selection_regressor(X, y=None, threshold=0.175, reset=True):
     return X[:, SELECTOR_REGRESSOR]
 
 
-# ('KNeighborsRegressor', 1.468204764998518, 0.46157129619317033)
-# ('LGBMRegressor', 13.729332175978925, 0.5448872260418829)
-# ('GradientBoostingRegressor', 17.80694640800357, 0.546633616899119)
-# ('SVR', 0.19053514004917815, 0.531567645264672)
-# ('RandomForestRegressor', 16.027996902004816, 0.5047773134960797)
-# ('ExtraTreesRegressor', 2.9239139769924805, 0.5053379082346622)
-# ('XGBRegressor', 7.853434015007224, 0.47745816217877224)
-# ('AdaBoostRegressor', -1, 0.4876988170828006)
-# ('MLPRegressor', -1, 0.4233371020725281)
+# Thoughts:
+# Probably cannot use outlier detection as it removes samples from classes with fewer occurrences
+# Feature selection should be fine though^^
+# Model can still be improved drastically
 
 def main():
     global TRAINING_DATA_X
+    TRAINING_DATA_X = "X_train.csv"
+    # TRAINING_DATA_X = "X_train_extracted.csv"
     # TRAINING_DATA_X = "X_train_partial.csv"
-    TRAINING_DATA_X = "X_train_extracted.csv"
+    # TRAINING_DATA_X = "X_train_extracted_partial.csv"
     global TRAINING_DATA_y
+    TRAINING_DATA_y = "y_train.csv"
+    # TRAINING_DATA_y = "y_train_extracted.csv"
     # TRAINING_DATA_y = "y_train_partial.csv"
-    TRAINING_DATA_y = "y_train_extracted.csv"
-    # print(f'Start time: {datetime.datetime.now()}')
-    # start = time.perf_counter()
-    # model = SVC()
-    # X, y = get_preprocessed_data(False)
-    # scores = cross_validate(model, X, y, cv=10, scoring=SCORER, n_jobs=-1)["test_score"]
-    # print(f'Validation Score: {sum(scores) / len(scores)}')
-    # end = time.perf_counter()
-    # print(f'End time: {datetime.datetime.now()}')
-    # print(f'Runtime: {end - start} s')
+    # TRAINING_DATA_y = "y_train_extracted_partial.csv"
+
+    print(f'Start time: {datetime.datetime.now()}')
+    start = time.perf_counter()
+    model = SVC()
+    X, y = get_preprocessed_data(False)
+    scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
+    print(f'Validation Score: {sum(scores) / len(scores)}')
+    write_results(model)
+    end = time.perf_counter()
+    print(f'End time: {datetime.datetime.now()}')
+    print(f'Runtime: {end - start} s')
+
     # model_start = time.perf_counter()
     # model = CatBoostRegressor(logging_level='Silent')
     # model.fit(X, y)
@@ -411,17 +370,18 @@ def main():
     # print(f'{name} - RandomizedSearch Runtime: {end - start} s')
     # print(f'{name} Best Score: {clf.best_score_}')
     # print(f'{name} Best Parameters: {clf.best_params_}')
-    stats = []
-    param_space = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
-    for param in param_space:
-        X, y = get_preprocessed_data(param, False)
-        model = SVC()
-        start = time.perf_counter()
-        scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
-        end = time.perf_counter()
-        stats.append((sum(scores) / len(scores), end - start, param))
-        print(stats[-1])
-    print(f'Max: {stats[numpy.argmax([x[0] for x in stats])]}')
+
+    # stats = []
+    # param_space = [0.4, 0.45, 0.5, 0.6]
+    # for param in param_space:
+    #     X, y = get_preprocessed_data(param, False)
+    #     model = SVC()
+    #     start = time.perf_counter()
+    #     scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
+    #     end = time.perf_counter()
+    #     stats.append((sum(scores) / len(scores), end - start, param))
+    #     print(stats[-1])
+    # print(f'Max: {stats[numpy.argmax([x[0] for x in stats])]}')
 
 
 if __name__ == "__main__":
