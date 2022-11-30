@@ -123,6 +123,10 @@ def extract_features_neurokit(X, y, reset=True):
     X_new = []
     y_new = []
     sampling_rate = 300
+    min_r = 2e26
+    max_length_interval = 0
+    minimal_heartbeats = 2e26
+    no_heartbeats = 0
     for i, x in enumerate(X):
         x = x[~np.isnan(x)]
         rpeaks, = ecg.engzee_segmenter(x, sampling_rate)
@@ -134,62 +138,77 @@ def extract_features_neurokit(X, y, reset=True):
         avg_heartbeat = np.mean(beats, axis=0)
         ecg_cleaned = nk.ecg_clean(x, sampling_rate)
         _, rpeaks = nk.ecg_peaks(ecg_cleaned, sampling_rate)
+        if len(rpeaks["ECG_R_Peaks"]) == 0:
+            continue
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate)
-        # Get the R peak for the average heartbeat
-        r_index_local = np.argmax(avg_heartbeat)
-        r_index = rpeaks["ECG_R_Peaks"]
-        outlier_mask = ~np.isnan(r_index)
-        p_index = np.array(waves["ECG_P_Peaks"])
-        outlier_mask = outlier_mask & ~np.isnan(p_index)
-        q_index = np.array(waves["ECG_Q_Peaks"])
-        outlier_mask = outlier_mask & ~np.isnan(q_index)
-        s_index = np.array(waves["ECG_S_Peaks"])
-        outlier_mask = outlier_mask & ~np.isnan(s_index)
-        t_index = np.array(waves["ECG_T_Peaks"])
-        outlier_mask = outlier_mask & ~np.isnan(t_index)
-        # Scaling to convert lengths in neurokit to standardized length in biosppy
-        heartbeats = nk.ecg_segment(ecg_cleaned, sampling_rate=sampling_rate)
-        heartbeats = np.array([v.iloc[:, 0].to_numpy() for k, v in heartbeats.items()])
-        neurokit_length = len(heartbeats[0])
-        scaling = len(avg_heartbeat) / neurokit_length
-        # Compute local peaks in reference to local R index
-        agg_p, agg_q, agg_s, agg_t = [], [], [], []
-        r_index_location = r_index_local / len(avg_heartbeat)
-        for p, q, r, s, t in zip(p_index[outlier_mask],
-                                 q_index[outlier_mask],
-                                 r_index[outlier_mask],
-                                 s_index[outlier_mask],
-                                 t_index[outlier_mask]):
-            start =
-            diff_rp = r - p
-            diff_rq = r - q
-            diff_sr = s - r
-            diff_tr = t - r
-            agg_p.append(r_index_local - diff_rp * scaling)
-            agg_q.append(r_index_local - diff_rq * scaling)
-            agg_s.append(r_index_local + diff_sr * scaling)
-            agg_t.append(r_index_local + diff_tr * scaling)
-        agg_p = np.array(agg_p)
-        agg_q = np.array(agg_q)
-        agg_s = np.array(agg_s)
-        agg_t = np.array(agg_t)
-        # Get average metrics for local peaks
-        p_index_local = int(np.mean(agg_p))
-        q_index_local = int(np.mean(agg_q))
-        s_index_local = int(np.mean(agg_s))
-        t_index_local = int(np.mean(agg_t))
-        print(p_index_local)
-        print(q_index_local)
-        print(r_index_local)
-        print(s_index_local)
-        print(t_index_local)
-        print(len(avg_heartbeat))
-        assert 0 <= p_index_local < len(avg_heartbeat)
-        assert 0 <= q_index_local < len(avg_heartbeat)
-        assert 0 <= s_index_local < len(avg_heartbeat)
-        assert 0 <= t_index_local < len(avg_heartbeat)
+
+        P_onsets = np.array(waves["ECG_P_Onsets"])
+        outlier_mask = ~np.isnan(P_onsets)
+
+        P_peaks = np.array(waves["ECG_P_Peaks"])
+        outlier_mask = ~np.isnan(P_peaks) & outlier_mask
+
+        P_offsets = np.array(waves["ECG_P_Offsets"])
+        outlier_mask = ~np.isnan(P_offsets) & outlier_mask
+
+        R_onsets = np.array(waves["ECG_R_Onsets"])
+        outlier_mask = ~np.isnan(R_onsets) & outlier_mask
+
+        Q_peaks = np.array(waves["ECG_Q_Peaks"])
+        outlier_mask = ~np.isnan(Q_peaks) & outlier_mask
+
+        R_peaks = np.array(rpeaks["ECG_R_Peaks"])
+        outlier_mask = ~np.isnan(R_peaks) & outlier_mask
+
+        R_offsets = np.array(waves["ECG_R_Offsets"])
+        outlier_mask = ~np.isnan(R_offsets) & outlier_mask
+
+        S_peaks = np.array(waves["ECG_S_Peaks"])
+        outlier_mask = ~np.isnan(S_peaks) & outlier_mask
+
+        T_onsets = np.array(waves["ECG_T_Onsets"])
+        outlier_mask = ~np.isnan(T_onsets) & outlier_mask
+
+        T_peaks = np.array(waves["ECG_T_Peaks"])
+        outlier_mask = ~np.isnan(T_peaks) & outlier_mask
+
+        T_offsets = np.array(waves["ECG_T_Offsets"])
+        outlier_mask = ~np.isnan(T_offsets) & outlier_mask
+
+        min_r = min(np.min(R_peaks), min_r)
+
+        P_onsets = P_onsets[outlier_mask]
+        P_peaks = P_peaks[outlier_mask]
+        P_offsets = P_offsets[outlier_mask]
+        R_onsets = R_onsets[outlier_mask]
+        Q_peaks = Q_peaks[outlier_mask]
+        R_peaks = R_peaks[outlier_mask]
+        R_offsets = R_offsets[outlier_mask]
+        S_peaks = S_peaks[outlier_mask]
+        T_onsets = T_onsets[outlier_mask]
+        T_peaks = T_peaks[outlier_mask]
+        T_offsets = T_offsets[outlier_mask]
+
+        if len(R_peaks) == 0:
+            continue
+
+        intervals = []
+        for i, (pon, pp, poff, ron, qp, rp, sp, roff, ton, tp, toff) in enumerate(zip(
+                P_onsets, P_peaks, P_offsets, R_onsets, Q_peaks, R_peaks,
+                S_peaks, R_offsets, T_onsets, T_peaks, T_offsets)):
+            intervals.append(toff - pon)
+        max_length_interval = max(np.max(intervals), max_length_interval)
+        filtered = len(list(filter(lambda val: val < 300, intervals)))
+        no_heartbeats += filtered == 0
+        minimal_heartbeats = min(filtered, minimal_heartbeats)
+
+    print(f"Minimal peak location: {min_r}")
+    print(f"Maximal heartbeat length: {max_length_interval}")
+    print(f"Minimal amount of heartbeats: {minimal_heartbeats}")
+    print(f"No heartbeats: {no_heartbeats}")
     exit()
     return np.array(X_new), np.array(y_new)
 
@@ -372,9 +391,9 @@ def feature_selection_regressor(X, y=None, threshold=0.1, reset=True):
 
 def main():
     global TRAINING_DATA_X
-    TRAINING_DATA_X = "X_train_partial.csv"
+    TRAINING_DATA_X = "X_train.csv"
     global TRAINING_DATA_y
-    TRAINING_DATA_y = "y_train_partial.csv"
+    TRAINING_DATA_y = "y_train.csv"
     print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
     model = SVC()
