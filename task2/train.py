@@ -76,14 +76,22 @@ def read_train_data():
     return X, y
 
 
-def get_preprocessed_data():
+def write_train_data(X, y):
+    columns = [f"x{x}" for x in range(X.shape[1])]
+    pd.DataFrame(data=X, columns=columns).to_csv("X_train_extracted.csv", index=True, index_label='id')
+    pd.DataFrame(data=y, columns=["y"]).to_csv("y_train_extracted.csv", index=True, index_label='id')
+
+
+def get_preprocessed_data(extract=True):
     X, y = read_train_data()
-    X, y = extract_features(X, y)
+    if extract:
+        X, y = extract_features(X, y)
+        write_train_data(X, y)
     X = feature_selection_variance(X)
     X = impute_missing_values_simple(X)
-    # X = feature_selection_regressor(X, y)
-    # X = min_max_scale(X)
-    # X, y = remove_outliers(X, y)
+    X = feature_selection_regressor(X, y)
+    X = min_max_scale(X)
+    X, y = remove_outliers(X, y)
     return X, y
 
 
@@ -97,12 +105,89 @@ def plot_values(values, markers=None):
     show()
 
 
+def PQRST_feature_extraction(waves, rpeaks):
+    ecg_points = np.array(list(zip(
+        waves["ECG_P_Onsets"],
+        waves["ECG_P_Peaks"],
+        waves["ECG_P_Offsets"],
+        waves["ECG_R_Onsets"],
+        waves["ECG_Q_Peaks"],
+        rpeaks["ECG_R_Peaks"],
+        waves["ECG_R_Offsets"],
+        waves["ECG_S_Peaks"],
+        waves["ECG_T_Onsets"],
+        waves["ECG_T_Peaks"],
+        waves["ECG_T_Offsets"])))
+
+    rpeaks = ecg_points[:, 5]
+    rr_interval = np.mean(rpeaks[1:] - rpeaks[:-1])
+
+    ref_r = ecg_points[0, 5]
+    r_offset = np.repeat(rpeaks.reshape(-1, 1) - ref_r, ecg_points.shape[1], axis=1)
+    ecg_points -= r_offset
+    ecg_points = impute_mean_values(ecg_points)
+    ecg_points = ecg_points[local_outlier_detection(ecg_points)]
+    ecg_points = np.mean(ecg_points, axis=0)
+
+    # R_Peak
+    r_amplitude = ecg_points[5]
+    # Q_Peak
+    q_amplitude = ecg_points[4]
+    # P_Onset to R_Onset
+    pr_interval = ecg_points[3] - ecg_points[0]
+    # P_Offset to R_Onset
+    pr_segment = ecg_points[2] - ecg_points[0]
+    # Q_Peak to S_Peak
+    qrs_complex = ecg_points[-4] - ecg_points[4]
+    # Q_Peak to T_Offset
+    qt_interval = ecg_points[-1] - ecg_points[4]
+    # R_Offset to T_Onset
+    st_segment = ecg_points[-3] - ecg_points[-5]
+    # RS Ratio
+    rs_ratio = ecg_points[-4] / ecg_points[5]
+    # QRS amplitude
+    qrs_amplitude = ecg_points[4] + ecg_points[5] + ecg_points[7]
+
+    features = np.array([
+        r_amplitude,
+        q_amplitude,
+        rr_interval,
+        pr_interval,
+        pr_segment,
+        qrs_complex,
+        qt_interval,
+        st_segment,
+        rs_ratio,
+        qrs_amplitude
+    ])
+    return features
+
+
+def HRV_feature_extraction(hrv_indices):
+    features = [
+        hrv_indices["HRV_MeanNN"],
+        hrv_indices["HRV_SDNN"],
+        hrv_indices["HRV_RMSSD"],
+        hrv_indices["HRV_MedianNN"],
+        hrv_indices["HRV_pNN50"],
+        hrv_indices["HRV_MinNN"],
+        hrv_indices["HRV_MaxNN"],
+        hrv_indices["HRV_LF"],
+        hrv_indices["HRV_HF"],
+        hrv_indices["HRV_LFHF"],
+        hrv_indices["HRV_LnHF"],
+    ]
+    features = [x.iloc[0] for x in features]
+    return np.array(features)
+
 def extract_features(X, Y = None):
     X_new = []
     Y_new = []
     sampling_rate = 300
     for i, x in enumerate(X):
         x = x[~np.isnan(x)]
+
+        # Biosppy Feature Extraction
         rpeaks, = ecg.engzee_segmenter(x, sampling_rate)
         if len(rpeaks) < 2:
             continue
@@ -110,6 +195,8 @@ def extract_features(X, Y = None):
         if len(beats) == 0:
             continue
         avg_heartbeat = np.mean(beats, axis=0)
+
+        # Neurokit Feature Extraction
         ecg_cleaned = nk.ecg_clean(x, sampling_rate)
         _, rpeaks = nk.ecg_peaks(ecg_cleaned, sampling_rate)
         if len(rpeaks["ECG_R_Peaks"]) == 0:
@@ -120,67 +207,12 @@ def extract_features(X, Y = None):
             try:
                 _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate)
                 # Heart Rate Variability in time, frequency, and non-linear domain
-                hrv_indices = nk.hrv(rpeaks, sampling_rate).iloc[0, :].to_numpy()
+                hrv_indices = nk.hrv(rpeaks, sampling_rate)
             except (KeyError, ValueError):
                 continue
 
-        ecg_points = np.array(list(zip(
-            waves["ECG_P_Onsets"],
-            waves["ECG_P_Peaks"],
-            waves["ECG_P_Offsets"],
-            waves["ECG_R_Onsets"],
-            waves["ECG_Q_Peaks"],
-            rpeaks["ECG_R_Peaks"],
-            waves["ECG_R_Offsets"],
-            waves["ECG_S_Peaks"],
-            waves["ECG_T_Onsets"],
-            waves["ECG_T_Peaks"],
-            waves["ECG_T_Offsets"])))
-
-        rpeaks = ecg_points[:, 5]
-        rr_interval = np.mean(rpeaks[1:] - rpeaks[:-1])
-
-        ref_r = ecg_points[0, 5]
-        r_offset = np.repeat(rpeaks.reshape(-1, 1) - ref_r, ecg_points.shape[1], axis=1)
-        ecg_points -= r_offset
-        ecg_points = impute_mean_values(ecg_points)
-        ecg_points = ecg_points[local_outlier_detection(ecg_points)]
-        ecg_points = np.mean(ecg_points, axis=0)
-
-
-        # R_Peak
-        r_amplitude = ecg_points[5]
-        # Q_Peak
-        q_amplitude = ecg_points[4]
-        # P_Onset to R_Onset
-        pr_interval = ecg_points[3] - ecg_points[0]
-        # P_Offset to R_Onset
-        pr_segment = ecg_points[2] - ecg_points[0]
-        # Q_Peak to S_Peak
-        qrs_complex = ecg_points[-4] - ecg_points[4]
-        # Q_Peak to T_Offset
-        qt_interval = ecg_points[-1] - ecg_points[4]
-        # R_Offset to T_Onset
-        st_segment = ecg_points[-3] - ecg_points[-5]
-        # RS Ratio
-        rs_ratio = ecg_points[-4] / ecg_points[5]
-        # QRS amplitude
-        qrs_amplitude = ecg_points[4] + ecg_points[5] + ecg_points[7]
-
-        features = np.array([
-            r_amplitude,
-            q_amplitude,
-            rr_interval,
-            pr_interval,
-            pr_segment,
-            qrs_complex,
-            qt_interval,
-            st_segment,
-            rs_ratio,
-            qrs_amplitude
-        ])
-
-        # features = np.concatenate((features, hrv_indices))
+        features = PQRST_feature_extraction(waves, rpeaks)
+        features = np.concatenate((features, HRV_feature_extraction(hrv_indices)))
 
         X_new.append(features)
         if Y is not None:
@@ -246,24 +278,9 @@ def impute_missing_values_iterative(X, reset=True):
     return ITERATIVE_IMPUTER.transform(X)
 
 
-def detect_non_majority_votes(X):
-    values, counts = np.unique(X, return_counts=True)
-    majority = values[np.argmax(counts)]
-    mask = X == majority
-    return mask
-
-
 def local_outlier_detection(X):
     model = LocalOutlierFactor(n_neighbors=min(len(X), 20), n_jobs=-1)
     decision = model.fit_predict(X)
-    mask = 0 <= decision
-    return mask
-
-
-def detect_outliers_X(X, outliers=0.0625):
-    model = IsolationForest(contamination=outliers, n_jobs=-1)
-    model.fit(X)
-    decision = model.predict(X)
     mask = 0 <= decision
     return mask
 
@@ -315,7 +332,7 @@ def feature_selection_percentile(X, y=None, reset=True):
 SELECTOR_REGRESSOR = None
 
 
-def feature_selection_regressor(X, y=None, threshold=0.1, reset=True):
+def feature_selection_regressor(X, y=None, threshold=0.8, reset=True):
     global SELECTOR_REGRESSOR
     if reset:
         selection = int(threshold * X.shape[1])
@@ -339,13 +356,15 @@ def feature_selection_regressor(X, y=None, threshold=0.1, reset=True):
 
 def main():
     global TRAINING_DATA_X
-    TRAINING_DATA_X = "X_train_partial.csv"
+    # TRAINING_DATA_X = "X_train_partial.csv"
+    TRAINING_DATA_X = "X_train_extracted.csv"
     global TRAINING_DATA_y
-    TRAINING_DATA_y = "y_train_partial.csv"
+    # TRAINING_DATA_y = "y_train_partial.csv"
+    TRAINING_DATA_y = "y_train_extracted.csv"
     print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
     model = SVC()
-    X, y = get_preprocessed_data()
+    X, y = get_preprocessed_data(False)
     scores = cross_validate(model, X, y, cv=10, scoring=SCORER, n_jobs=-1)["test_score"]
     print(f'Validation Score: {sum(scores) / len(scores)}')
     # model.fit(*get_preprocessed_data())
