@@ -52,7 +52,11 @@ def get_test_data():
     data = pd.read_csv(TEST_DATA_X)
     X = data.iloc[:, 1:].to_numpy()
     if "extracted" not in TEST_DATA_X:
+        length = len(X)
+        start = time.perf_counter()
         X = extract_features(X)
+        print(f"Test data feature extraction: {time.perf_counter() - start} s")
+        assert len(X) == length
         write_test_data(X)
     X = impute_missing_values_simple(X, reset=False)
     X = min_max_scale(X, reset=False)
@@ -82,7 +86,9 @@ def write_test_data(X):
 def get_preprocessed_data():
     X, y = read_train_data()
     if "extracted" not in TRAINING_DATA_X:
+        start = time.perf_counter()
         X, y = extract_features(X, y)
+        print(f"Train data feature extraction: {time.perf_counter() - start} s")
         write_train_data(X, y)
     X = impute_missing_values_simple(X)
     X = min_max_scale(X)
@@ -219,7 +225,7 @@ def HRV_feature_extraction(hrv_indices):
     return np.array(features)
 
 
-def extract_features(X, Y = None, test=False):
+def extract_features(X, Y = None):
     X_new = []
     Y_new = []
     sampling_rate = 300
@@ -231,19 +237,24 @@ def extract_features(X, Y = None, test=False):
         ecg_cleaned = np.array(nk.ecg_clean(x, sampling_rate))
         _, rpeaks = nk.ecg_peaks(ecg_cleaned, sampling_rate)
         if len(rpeaks["ECG_R_Peaks"]) == 0:
-            if test:
-                raise RuntimeError
+            X_new.append(None)
             continue
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
                 _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate)
+            except (KeyError, ValueError):
+                X_new.append(None)
+                continue
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
                 # Heart Rate Variability in time, frequency, and non-linear domain
                 hrv_indices = nk.hrv(rpeaks, sampling_rate)
             except (KeyError, ValueError):
-                if test:
-                    raise RuntimeError
+                X_new.append(None)
                 continue
 
         features = pqrst_feature_extraction(ecg_cleaned, waves, rpeaks)
@@ -253,12 +264,27 @@ def extract_features(X, Y = None, test=False):
         if Y is not None:
             Y_new.append(Y[i])
 
+    # For all cases where feature extraction failed (features == None),
+    # use the features of the closest signal as reference
+    for i, x_new in enumerate(X_new):
+        if x_new is None:
+            closest = 0
+            distance = 2e28
+            X_i = X[i]
+            for j, x in enumerate(X):
+                if X_new[j] is not None:
+                    dist = np.sum(np.abs(x - X_i))
+                    if dist < distance:
+                        distance = dist
+                        closest = j
+            X_new[i] = X_new[closest]
+
     X_new = np.array(X_new)
 
     if Y is None:
         return X_new
 
-    return np.array(X_new), np.array(Y_new)
+    return X_new, np.array(Y_new)
 
 
 MIN_MAX_SCALER = None
@@ -364,13 +390,14 @@ def main():
     # TRAINING_DATA_y = "y_train_extracted_partial.csv"
     global TEST_DATA_X
     TEST_DATA_X = "X_test_extracted.csv"
+    # TEST_DATA_X = "X_test_extracted.csv"
 
     print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
     model = StackedModel()
     X, y = get_preprocessed_data()
-    scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
-    print(f'Validation Score: {sum(scores) / len(scores)}')
+    # scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
+    # print(f'Validation Score: {sum(scores) / len(scores)}')
     model.fit(X, y)
     write_results(model)
     end = time.perf_counter()
