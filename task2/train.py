@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import make_scorer, f1_score
 from sklearn.svm import SVR, SVC
+from sklearn.linear_model import LogisticRegression
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor, AdaBoostRegressor, \
     HistGradientBoostingRegressor, IsolationForest, StackingRegressor, StackingClassifier
@@ -37,10 +38,10 @@ def StackedModel():
                               booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
                               subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
                               reg_lambda=10, num_parallel_tree=1, n_jobs=-1)),
-        ('svc', SVC(C=50.0, tol=1e-4, cache_size=1024))
+        ('svc', SVC(C=50.0, tol=1e-4, cache_size=1024, class_weight='balanced'))
 
     ]
-    return StackingClassifier(estimators, n_jobs=-1)
+    return StackingClassifier(estimators, final_estimator=LogisticRegression(class_weight='balanced'), n_jobs=-1)
 
 def write_results(model):
     y_pred = model.predict(get_test_data())
@@ -83,18 +84,17 @@ def write_test_data(X):
     pd.DataFrame(data=X, columns=columns).to_csv("X_test_extracted.csv", index=True, index_label='id')
 
 
-def get_preprocessed_data():
+def get_train_data():
     X, y = read_train_data()
     if "extracted" not in TRAINING_DATA_X:
         start = time.perf_counter()
-        X, y = extract_features(X, y)
+        X = extract_features(X)
         print(f"Train data feature extraction: {time.perf_counter() - start} s")
         write_train_data(X, y)
     X = impute_missing_values_simple(X)
     X = min_max_scale(X)
     X = feature_selection_variance(X)
     X = feature_selection_regressor(X, y)
-    # X, y = remove_outliers(X, y)
     return X, y
 
 
@@ -225,9 +225,8 @@ def HRV_feature_extraction(hrv_indices):
     return np.array(features)
 
 
-def extract_features(X, Y = None):
+def extract_features(X):
     X_new = []
-    Y_new = []
     sampling_rate = 300
     for i, x in enumerate(X):
         print(f"Process sample: {i}")
@@ -261,8 +260,6 @@ def extract_features(X, Y = None):
         features = np.concatenate((features, HRV_feature_extraction(hrv_indices)))
 
         X_new.append(features)
-        if Y is not None:
-            Y_new.append(Y[i])
 
     # For all cases where feature extraction failed (features == None),
     # use the features of the closest signal as reference
@@ -281,10 +278,7 @@ def extract_features(X, Y = None):
 
     X_new = np.array(X_new)
 
-    if Y is None:
-        return X_new
-
-    return X_new, np.array(Y_new)
+    return X_new
 
 
 MIN_MAX_SCALER = None
@@ -313,6 +307,7 @@ def impute_mean_values(X):
     model = SimpleImputer(strategy="mean")
     return model.fit_transform(X)
 
+
 SIMPLE_IMPUTER = None
 
 
@@ -329,16 +324,6 @@ def local_outlier_detection(X):
     decision = model.fit_predict(X)
     mask = 0 <= decision
     return mask
-
-
-def remove_outliers(X, y, outliers=0.5):
-    model = IsolationForest(contamination=outliers, n_jobs=-1)
-    model.fit(X)
-    decision = model.predict(X)
-    mask = 0 <= decision
-    X = X[mask]
-    y = y[mask]
-    return X, y
 
 
 SELECTOR_VARIANCE = None
@@ -379,25 +364,25 @@ def feature_selection_regressor(X, y=None, threshold=0.475, reset=True):
 
 def main():
     global TRAINING_DATA_X
-    # TRAINING_DATA_X = "X_train.csv"
-    TRAINING_DATA_X = "X_train_extracted.csv"
+    TRAINING_DATA_X = "X_train.csv"
+    # TRAINING_DATA_X = "X_train_extracted.csv"
     # TRAINING_DATA_X = "X_train_partial.csv"
     # TRAINING_DATA_X = "X_train_extracted_partial.csv"
     global TRAINING_DATA_y
-    # TRAINING_DATA_y = "y_train.csv"
-    TRAINING_DATA_y = "y_train_extracted.csv"
+    TRAINING_DATA_y = "y_train.csv"
+    # TRAINING_DATA_y = "y_train_extracted.csv"
     # TRAINING_DATA_y = "y_train_partial.csv"
     # TRAINING_DATA_y = "y_train_extracted_partial.csv"
     global TEST_DATA_X
-    TEST_DATA_X = "X_test_extracted.csv"
+    TEST_DATA_X = "X_test.csv"
     # TEST_DATA_X = "X_test_extracted.csv"
 
     print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
     model = StackedModel()
-    X, y = get_preprocessed_data()
-    # scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
-    # print(f'Validation Score: {sum(scores) / len(scores)}')
+    X, y = get_train_data()
+    scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
+    print(f'Validation Score: {sum(scores) / len(scores)}')
     model.fit(X, y)
     write_results(model)
     end = time.perf_counter()
