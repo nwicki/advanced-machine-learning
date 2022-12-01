@@ -25,6 +25,7 @@ from matplotlib.pyplot import plot, show
 import neurokit2 as nk
 
 TRAINING_DATA_X = ""
+TEST_DATA_X = ""
 TRAINING_DATA_y = ""
 SCORER = make_scorer(f1_score, average='micro')
 
@@ -36,9 +37,11 @@ def write_results(model):
 
 
 def get_test_data():
-    data = pd.read_csv("X_test.csv")
+    data = pd.read_csv(TEST_DATA_X)
     X = data.iloc[:, 1:].to_numpy()
-    X = extract_features(X)
+    if "extracted" not in TEST_DATA_X:
+        X = extract_features(X)
+        write_test_data(X)
     X = impute_missing_values_simple(X, reset=False)
     X = min_max_scale(X, reset=False)
     X = feature_selection_variance(X, reset=False)
@@ -59,17 +62,21 @@ def write_train_data(X, y):
     pd.DataFrame(data=X, columns=columns).to_csv("X_train_extracted.csv", index=True, index_label='id')
     pd.DataFrame(data=y, columns=["y"]).to_csv("y_train_extracted.csv", index=True, index_label='id')
 
+def write_test_data(X):
+    columns = [f"x{x}" for x in range(X.shape[1])]
+    pd.DataFrame(data=X, columns=columns).to_csv("X_test_extracted.csv", index=True, index_label='id')
 
-def get_preprocessed_data(extract=True):
+
+def get_preprocessed_data():
     X, y = read_train_data()
-    if extract:
+    if "extracted" not in TRAINING_DATA_X:
         X, y = extract_features(X, y)
         write_train_data(X, y)
     X = impute_missing_values_simple(X)
     X = min_max_scale(X)
     X = feature_selection_variance(X)
     X = feature_selection_regressor(X, y)
-    X, y = remove_outliers(X, y)
+    # X, y = remove_outliers(X, y)
     return X, y
 
 
@@ -148,6 +155,11 @@ def pqrst_feature_extraction(ecg, waves, rpeaks):
         waves["ECG_T_Onsets"],
         waves["ECG_T_Peaks"],
         waves["ECG_T_Offsets"])))
+
+    ecg_points[:, np.all(np.isnan(ecg_points), axis=0)] = 0
+    feature_median = np.nanmedian(ecg_points, axis=0)
+    indices = np.where(np.isnan(ecg_points))
+    ecg_points[indices] = np.take(feature_median, indices[1])
 
     rpeaks = ecg_points[:, 5]
     rr_interval = rpeaks[1:] - rpeaks[:-1]
@@ -324,22 +336,25 @@ def feature_selection_regressor(X, y=None, threshold=0.475, reset=True):
 
 def main():
     global TRAINING_DATA_X
-    TRAINING_DATA_X = "X_train.csv"
-    # TRAINING_DATA_X = "X_train_extracted.csv"
+    # TRAINING_DATA_X = "X_train.csv"
+    TRAINING_DATA_X = "X_train_extracted.csv"
     # TRAINING_DATA_X = "X_train_partial.csv"
     # TRAINING_DATA_X = "X_train_extracted_partial.csv"
     global TRAINING_DATA_y
-    TRAINING_DATA_y = "y_train.csv"
-    # TRAINING_DATA_y = "y_train_extracted.csv"
+    # TRAINING_DATA_y = "y_train.csv"
+    TRAINING_DATA_y = "y_train_extracted.csv"
     # TRAINING_DATA_y = "y_train_partial.csv"
     # TRAINING_DATA_y = "y_train_extracted_partial.csv"
+    global TEST_DATA_X
+    TEST_DATA_X = "X_test_extracted.csv"
 
     print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
     model = SVC()
-    X, y = get_preprocessed_data(False)
+    X, y = get_preprocessed_data()
     scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
     print(f'Validation Score: {sum(scores) / len(scores)}')
+    model.fit(X, y)
     write_results(model)
     end = time.perf_counter()
     print(f'End time: {datetime.datetime.now()}')
