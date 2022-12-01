@@ -5,7 +5,7 @@ from sklearn.metrics import make_scorer, f1_score
 from sklearn.svm import SVR, SVC
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor, AdaBoostRegressor, \
-    HistGradientBoostingRegressor, IsolationForest, StackingRegressor
+    HistGradientBoostingRegressor, IsolationForest, StackingRegressor, StackingClassifier
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import DotProduct, WhiteKernel
 from sklearn.model_selection import train_test_split, cross_validate, GridSearchCV, RandomizedSearchCV
@@ -17,6 +17,7 @@ from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 from sklearn.neighbors import KNeighborsRegressor, LocalOutlierFactor
 from sklearn.neural_network import MLPRegressor
+from sklearn.base import clone
 import time
 import numpy
 import datetime
@@ -29,6 +30,17 @@ TEST_DATA_X = ""
 TRAINING_DATA_y = ""
 SCORER = make_scorer(f1_score, average='micro')
 
+
+def StackedModel():
+    estimators = [
+        ('xgb', XGBClassifier(n_estimators=2000, max_depth=8, grow_policy='lossguide', learning_rate=0.1,
+                              booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
+                              subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
+                              reg_lambda=10, num_parallel_tree=1, n_jobs=-1)),
+        ('svc', SVC(C=50.0, tol=1e-4, cache_size=1024))
+
+    ]
+    return StackingClassifier(estimators, n_jobs=-1)
 
 def write_results(model):
     y_pred = model.predict(get_test_data())
@@ -333,6 +345,11 @@ def feature_selection_regressor(X, y=None, threshold=0.475, reset=True):
 # Probably cannot use outlier detection as it removes samples from classes with fewer occurrences
 # Feature selection should be fine though^^
 # Model can still be improved drastically
+# model = SVC(C=50.0, tol=1e-4, cache_size=1024) -> Validation Score: 0.7793457623890372
+# model = XGBClassifier(n_estimators=2000, max_depth=8, grow_policy= 'lossguide', learning_rate=0.1,
+#                       booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
+#                       subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
+#                       reg_lambda=10, num_parallel_tree=1, n_jobs=-1) -> Validation Score: 0.7871956816427264
 
 def main():
     global TRAINING_DATA_X
@@ -350,7 +367,7 @@ def main():
 
     print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
-    model = SVC()
+    model = StackedModel()
     X, y = get_preprocessed_data()
     scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
     print(f'Validation Score: {sum(scores) / len(scores)}')
@@ -360,26 +377,35 @@ def main():
     print(f'End time: {datetime.datetime.now()}')
     print(f'Runtime: {end - start} s')
 
-    # model_start = time.perf_counter()
-    # model = CatBoostRegressor(logging_level='Silent')
+    # start = time.perf_counter()
+    # X, y = get_preprocessed_data()
+    # model = XGBClassifier()
+    # name = type(model).__name__
     # model.fit(X, y)
-    # model_end = time.perf_counter()
-    # run = model_end - model_start
-    # print(f'{name} - Sample Execution Runtime: {run} s')
-    # model = sklearn.base.clone(model)
+    # end = time.perf_counter()
+    # print(f'{name} - Sample Execution Runtime: {end - start} s')
+    # model = clone(model)
     # param_dict = {
-    #     'loss_function': ['RMSE'],
-    #     'iterations': [10],
-    #     'learning_rate': [1e-2],
-    #     'l2_leaf_reg': [3],
-    #     'bootstrap_type': ['Bayesian'],
-    #     'max_depth': [6],
-    #     'min_data_in_leaf': [1],
-    #     'max_leaves': [31],
-    #     'leaf_estimation_method': ['Newton'],
+    #     'n_estimators': [2000],
+    #     'max_depth': [4, 5, 6, 7, 8],
+    #     'grow_policy': ['lossguide'],
+    #     'learning_rate': [0.1],
+    #     'booster': ['gbtree'],
+    #     'tree_method': ['gpu_hist'],
+    #     'gamma': [1e-3],
+    #     'min_child_weight': [2],
+    #     'subsample': [0.7],
+    #     'sampling_method': ['uniform'],
+    #     'colsample_bytree': [0.6],
+    #     'reg_alpha': [0.5],
+    #     'reg_lambda': [10],
+    #     'num_parallel_tree': [1],
+    #     'n_jobs': [-1],
+    #     'random_state': [42],
     # }
-    # n_iter = 5
-    # clf = RandomizedSearchCV(model, param_dict, n_iter=n_iter, verbose=10, n_jobs=-1, scoring='r2')
+    # print(f"Parameter combinations: {np.prod([len(v) for k, v in param_dict.items()])}")
+    # n_iter = 20
+    # clf = RandomizedSearchCV(model, param_dict, n_iter=n_iter, verbose=10, n_jobs=-1, scoring=SCORER)
     # clf.fit(X, y)
     # end = time.perf_counter()
     # print(f'{name} - RandomizedSearch Runtime: {end - start} s')
@@ -401,3 +427,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+6
