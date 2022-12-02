@@ -1,4 +1,5 @@
 import warnings
+import json
 import numpy as np
 import pandas as pd
 from sklearn.metrics import make_scorer, f1_score
@@ -174,26 +175,31 @@ def pqrst_feature_extraction(ecg, waves, rpeaks):
         waves["ECG_T_Peaks"],
         waves["ECG_T_Offsets"])))
 
-    ecg_points[:, np.all(np.isnan(ecg_points), axis=0)] = 0
-    feature_median = np.nanmedian(ecg_points, axis=0)
-    indices = np.where(np.isnan(ecg_points))
-    ecg_points[indices] = np.take(feature_median, indices[1])
+    if 0 < np.sum(np.isnan(ecg_points)):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            feature_median = np.nanmedian(ecg_points, axis=0)
+        indices = np.where(np.isnan(ecg_points))
+        ecg_points[indices] = np.take(feature_median, indices[1])
 
     rpeaks = ecg_points[:, 5]
-    rr_interval = rpeaks[1:] - rpeaks[:-1]
-    rr_interval = np.array([
-        np.mean(rr_interval),
-        np.median(rr_interval),
-        np.min(rr_interval),
-        np.max(rr_interval),
-        np.std(rr_interval)
-    ])
+    if 1 < len(rpeaks):
+        rr_interval = rpeaks[1:] - rpeaks[:-1]
+        rr_interval = np.array([
+            np.mean(rr_interval),
+            np.median(rr_interval),
+            np.min(rr_interval),
+            np.max(rr_interval),
+            np.std(rr_interval)
+        ])
+    else:
+        rr_interval = np.zeros(5)
 
     ref_r = ecg_points[0, 5]
     r_offset = np.repeat(rpeaks.reshape(-1, 1) - ref_r, ecg_points.shape[1], axis=1)
     ecg_points_adjusted = ecg_points - r_offset
-    ecg_points_adjusted = impute_mean_values(ecg_points_adjusted)
-    ecg_points_adjusted = ecg_points_adjusted[local_outlier_detection(ecg_points_adjusted)]
+    # ecg_points_adjusted = impute_mean_values(ecg_points_adjusted)
+    # ecg_points_adjusted = ecg_points_adjusted[local_outlier_detection(ecg_points_adjusted)]
 
     features = np.concatenate((
         pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.mean),
@@ -232,49 +238,79 @@ def extract_features(X):
         print(f"Process sample: {i}")
         x = x[~np.isnan(x)]
 
+        # Biosppy Feature Extraction
+        r_peaks, = ecg.engzee_segmenter(x, sampling_rate)
+        beats, _ = ecg.extract_heartbeats(x, r_peaks, sampling_rate)
+
+        heartbeat_len = 180
+        substitute = np.array(heartbeat_len * [np.nan])
+
+        try:
+            heartbeat_mean = np.mean(beats, axis=0)
+        except ValueError:
+            heartbeat_mean = substitute
+        try:
+            heartbeat_median = np.median(beats, axis=0)
+        except ValueError:
+            heartbeat_median = substitute
+        try:
+            heartbeat_min = np.min(beats, axis=0)
+        except ValueError:
+            heartbeat_min = substitute
+        try:
+            heartbeat_max = np.max(beats, axis=0)
+        except ValueError:
+            heartbeat_max = substitute
+        try:
+            heartbeat_std = np.std(beats, axis=0)
+        except ValueError:
+            heartbeat_std = substitute
+
+        if type(heartbeat_mean) is not np.ndarray or len(heartbeat_mean) != heartbeat_len:
+            heartbeat_mean = substitute
+        if type(heartbeat_median) is not np.ndarray or len(heartbeat_median) != heartbeat_len:
+            heartbeat_median = substitute
+        if type(heartbeat_min) is not np.ndarray or len(heartbeat_min) != heartbeat_len:
+            heartbeat_min = substitute
+        if type(heartbeat_max) is not np.ndarray or len(heartbeat_max) != heartbeat_len:
+            heartbeat_max = substitute
+        if type(heartbeat_std) is not np.ndarray or len(heartbeat_std) != heartbeat_len:
+            heartbeat_std = substitute
+
+        features = np.concatenate((heartbeat_mean, heartbeat_median, heartbeat_min, heartbeat_max, heartbeat_std))
+
         # Neurokit Feature Extraction
         ecg_cleaned = np.array(nk.ecg_clean(x, sampling_rate))
         _, rpeaks = nk.ecg_peaks(ecg_cleaned, sampling_rate)
+
         if len(rpeaks["ECG_R_Peaks"]) == 0:
-            X_new.append(None)
-            continue
+            if len(r_peaks) != 0:
+                rpeaks["ECG_R_Peaks"] = r_peaks
+            else:
+                rpeaks["ECG_R_Peaks"] = np.array(heartbeat_len * [np.nan])
+
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
                 _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate)
-            except (KeyError, ValueError):
-                X_new.append(None)
-                continue
+            except (KeyError, ValueError, ZeroDivisionError):
+                waves = json.load(open("waves.txt"))
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
                 # Heart Rate Variability in time, frequency, and non-linear domain
                 hrv_indices = nk.hrv(rpeaks, sampling_rate)
-            except (KeyError, ValueError):
-                X_new.append(None)
-                continue
+            except (KeyError, ValueError, IndexError):
+                hrv_indices = pd.read_csv("hrv_indices.csv")
 
-        features = pqrst_feature_extraction(ecg_cleaned, waves, rpeaks)
-        features = np.concatenate((features, HRV_feature_extraction(hrv_indices)))
+        features = np.concatenate((
+            features,
+            pqrst_feature_extraction(ecg_cleaned, waves, rpeaks),
+            HRV_feature_extraction(hrv_indices)))
 
         X_new.append(features)
-
-    # For all cases where feature extraction failed (features == None),
-    # use the features of the closest signal as reference
-    for i, x_new in enumerate(X_new):
-        if x_new is None:
-            closest = 0
-            distance = 2e28
-            X_i = X[i]
-            for j, x in enumerate(X):
-                if X_new[j] is not None:
-                    dist = np.sum(np.abs(x - X_i))
-                    if dist < distance:
-                        distance = dist
-                        closest = j
-            X_new[i] = X_new[closest]
 
     X_new = np.array(X_new)
 
