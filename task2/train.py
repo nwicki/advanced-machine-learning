@@ -35,19 +35,31 @@ SCORER = make_scorer(f1_score, average='micro')
 
 def StackedModel():
     estimators = [
-        ('xgb', XGBClassifier(n_estimators=2000, max_depth=8, grow_policy='lossguide', learning_rate=0.1,
+        ('xgb', XGBClassifier(n_estimators=1000, max_depth=5, grow_policy='lossguide', learning_rate=0.1,
                               booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
                               subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
                               reg_lambda=10, num_parallel_tree=1, n_jobs=-1)),
-        ('svc', SVC(C=50.0, tol=1e-4, cache_size=1024, class_weight='balanced'))
+        # ('svc', SVC(C=50.0, tol=1e-4, cache_size=1024, class_weight='balanced'))
 
     ]
     return StackingClassifier(estimators, final_estimator=LogisticRegression(class_weight='balanced'), n_jobs=-1)
+
 
 def write_results(model):
     y_pred = model.predict(get_test_data())
     df = pd.DataFrame(y_pred, columns=["y"])
     df.to_csv("submission.csv", index_label="id")
+
+
+def write_train_data(X, y):
+    columns = [f"x{x}" for x in range(X.shape[1])]
+    pd.DataFrame(data=X, columns=columns).to_csv("X_train_extracted.csv", index=True, index_label='id')
+    pd.DataFrame(data=y, columns=["y"]).to_csv("y_train_extracted.csv", index=True, index_label='id')
+
+
+def write_test_data(X):
+    columns = [f"x{x}" for x in range(X.shape[1])]
+    pd.DataFrame(data=X, columns=columns).to_csv("X_test_extracted.csv", index=True, index_label='id')
 
 
 def get_test_data():
@@ -75,17 +87,7 @@ def read_train_data():
     return X, y
 
 
-def write_train_data(X, y):
-    columns = [f"x{x}" for x in range(X.shape[1])]
-    pd.DataFrame(data=X, columns=columns).to_csv("X_train_extracted.csv", index=True, index_label='id')
-    pd.DataFrame(data=y, columns=["y"]).to_csv("y_train_extracted.csv", index=True, index_label='id')
-
-def write_test_data(X):
-    columns = [f"x{x}" for x in range(X.shape[1])]
-    pd.DataFrame(data=X, columns=columns).to_csv("X_test_extracted.csv", index=True, index_label='id')
-
-
-def get_train_data():
+def get_train_data(param=None):
     X, y = read_train_data()
     if "extracted" not in TRAINING_DATA_X:
         start = time.perf_counter()
@@ -376,7 +378,7 @@ def feature_selection_variance(X, threshold=0.01, reset=True):
 SELECTOR_REGRESSOR = None
 
 
-def feature_selection_regressor(X, y=None, threshold=0.475, reset=True):
+def feature_selection_regressor(X, y=None, threshold=0.1, reset=True):
     global SELECTOR_REGRESSOR
     if reset:
         selection = int(threshold * X.shape[1])
@@ -393,15 +395,15 @@ def feature_selection_regressor(X, y=None, threshold=0.475, reset=True):
 # Feature selection should be fine though^^
 # Model can still be improved drastically
 # model = SVC(C=50.0, tol=1e-4, cache_size=1024) -> Validation Score: 0.7793457623890372
-# model = XGBClassifier(n_estimators=2000, max_depth=8, grow_policy= 'lossguide', learning_rate=0.1,
+# model = XGBClassifier(n_estimators=1000, max_depth=5, grow_policy= 'lossguide', learning_rate=0.1,
 #                       booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
 #                       subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
 #                       reg_lambda=10, num_parallel_tree=1, n_jobs=-1) -> Validation Score: 0.7871956816427264
 
 def main():
     global TRAINING_DATA_X
-    TRAINING_DATA_X = "X_train.csv"
-    # TRAINING_DATA_X = "X_train_extracted.csv"
+    # TRAINING_DATA_X = "X_train.csv"
+    TRAINING_DATA_X = "X_train_extracted.csv"
     # TRAINING_DATA_X = "X_train_partial.csv"
     # TRAINING_DATA_X = "X_train_extracted_partial.csv"
     global TRAINING_DATA_y
@@ -410,12 +412,15 @@ def main():
     # TRAINING_DATA_y = "y_train_partial.csv"
     # TRAINING_DATA_y = "y_train_extracted_partial.csv"
     global TEST_DATA_X
-    TEST_DATA_X = "X_test.csv"
-    # TEST_DATA_X = "X_test_extracted.csv"
+    # TEST_DATA_X = "X_test.csv"
+    TEST_DATA_X = "X_test_extracted.csv"
 
     print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
-    model = StackedModel()
+    model = XGBClassifier(n_estimators=1000, max_depth=5, grow_policy='lossguide', learning_rate=0.1,
+                              booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
+                              subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
+                              reg_lambda=10, num_parallel_tree=1, n_jobs=-1)
     X, y = get_train_data()
     scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
     print(f'Validation Score: {sum(scores) / len(scores)}')
@@ -425,8 +430,9 @@ def main():
     print(f'End time: {datetime.datetime.now()}')
     print(f'Runtime: {end - start} s')
 
+    # print(f'Start time: {datetime.datetime.now()}')
     # start = time.perf_counter()
-    # X, y = get_preprocessed_data()
+    # X, y = get_train_data()
     # model = XGBClassifier()
     # name = type(model).__name__
     # model.fit(X, y)
@@ -434,8 +440,8 @@ def main():
     # print(f'{name} - Sample Execution Runtime: {end - start} s')
     # model = clone(model)
     # param_dict = {
-    #     'n_estimators': [2000],
-    #     'max_depth': [4, 5, 6, 7, 8],
+    #     'n_estimators': [500, 1000, 2000, 3000],
+    #     'max_depth': [4, 5, 6, 7, 8, 9, 10],
     #     'grow_policy': ['lossguide'],
     #     'learning_rate': [0.1],
     #     'booster': ['gbtree'],
@@ -459,19 +465,24 @@ def main():
     # print(f'{name} - RandomizedSearch Runtime: {end - start} s')
     # print(f'{name} Best Score: {clf.best_score_}')
     # print(f'{name} Best Parameters: {clf.best_params_}')
+    # print(f'End time: {datetime.datetime.now()}')
 
+    # print(f'Start time: {datetime.datetime.now()}')
+    # start = time.perf_counter()
     # stats = []
-    # param_space = [0.4, 0.45, 0.5, 0.6]
+    # param_space = [0.1, 0.1125, 0.125, 0.1375, 0.15]
     # for param in param_space:
-    #     X, y = get_preprocessed_data(param, False)
+    #     X, y = get_train_data(param)
     #     model = SVC()
-    #     start = time.perf_counter()
+    #     model_start = time.perf_counter()
     #     scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
-    #     end = time.perf_counter()
-    #     stats.append((sum(scores) / len(scores), end - start, param))
+    #     model_end = time.perf_counter()
+    #     stats.append((sum(scores) / len(scores), model_end - model_start, param))
     #     print(stats[-1])
     # print(f'Max: {stats[numpy.argmax([x[0] for x in stats])]}')
-
+    # end = time.perf_counter()
+    # print(f'End time: {datetime.datetime.now()}')
+    # print(f'Runtime: {end - start} s')
 
 if __name__ == "__main__":
     main()
