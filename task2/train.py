@@ -15,7 +15,7 @@ from sklearn.impute import SimpleImputer, IterativeImputer
 from sklearn.preprocessing import RobustScaler, MinMaxScaler
 from sklearn.feature_selection import SelectPercentile, VarianceThreshold
 from xgboost import XGBRegressor, XGBClassifier
-from lightgbm import LGBMRegressor
+from lightgbm import LGBMRegressor, LGBMClassifier
 from catboost import CatBoostRegressor
 from sklearn.neighbors import KNeighborsRegressor, LocalOutlierFactor
 from sklearn.neural_network import MLPRegressor
@@ -111,7 +111,7 @@ def plot_values(values, markers=None):
     show()
 
 
-def pqrst_features(ecg, ecg_points, ecg_points_adjusted, func):
+def PQRST_features(ecg, ecg_points, ecg_points_adjusted, func):
     # Compress adjusted ecg_points over all signals
     ecg_points_compressed = func(ecg_points_adjusted, axis=0)
     # Use ecg_points as indices
@@ -163,7 +163,7 @@ def pqrst_features(ecg, ecg_points, ecg_points_adjusted, func):
     return features
 
 
-def pqrst_feature_extraction(ecg, waves, rpeaks):
+def PQRST_feature_extraction(ecg, waves, rpeaks):
     ecg_points = np.array(list(zip(
         waves["ECG_P_Onsets"],
         waves["ECG_P_Peaks"],
@@ -204,11 +204,11 @@ def pqrst_feature_extraction(ecg, waves, rpeaks):
     # ecg_points_adjusted = ecg_points_adjusted[local_outlier_detection(ecg_points_adjusted)]
 
     features = np.concatenate((
-        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.mean),
-        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.median),
-        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.min),
-        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.max),
-        pqrst_features(ecg, ecg_points, ecg_points_adjusted, np.std),
+        PQRST_features(ecg, ecg_points, ecg_points_adjusted, np.mean),
+        PQRST_features(ecg, ecg_points, ecg_points_adjusted, np.median),
+        PQRST_features(ecg, ecg_points, ecg_points_adjusted, np.min),
+        PQRST_features(ecg, ecg_points, ecg_points_adjusted, np.max),
+        PQRST_features(ecg, ecg_points, ecg_points_adjusted, np.std),
         rr_interval
     ))
 
@@ -304,13 +304,16 @@ def extract_features(X):
             try:
                 # Heart Rate Variability in time, frequency, and non-linear domain
                 hrv_indices = nk.hrv(rpeaks, sampling_rate)
+                print(hrv_indices.keys())
+                exit()
             except (KeyError, ValueError, IndexError):
                 hrv_indices = pd.read_csv("hrv_indices.csv")
 
         features = np.concatenate((
             features,
-            pqrst_feature_extraction(ecg_cleaned, waves, rpeaks),
-            HRV_feature_extraction(hrv_indices)))
+            PQRST_feature_extraction(ecg_cleaned, waves, rpeaks),
+            HRV_feature_extraction(hrv_indices),
+        ))
 
         X_new.append(features)
 
@@ -322,10 +325,10 @@ def extract_features(X):
 MIN_MAX_SCALER = None
 
 
-def min_max_scale(X, reset=True):
+def min_max_scale(X, interval=(-10, 10), reset=True):
     global MIN_MAX_SCALER
     if reset:
-        MIN_MAX_SCALER = MinMaxScaler((-1, 1))
+        MIN_MAX_SCALER = MinMaxScaler(interval)
         MIN_MAX_SCALER.fit(X)
     return MIN_MAX_SCALER.transform(X)
 
@@ -349,10 +352,10 @@ def impute_mean_values(X):
 SIMPLE_IMPUTER = None
 
 
-def impute_missing_values_simple(X, reset=True):
+def impute_missing_values_simple(X, strategy="median", reset=True):
     global SIMPLE_IMPUTER
     if reset:
-        SIMPLE_IMPUTER = SimpleImputer(strategy="median")
+        SIMPLE_IMPUTER = SimpleImputer(strategy=strategy)
         SIMPLE_IMPUTER.fit(X)
     return SIMPLE_IMPUTER.transform(X)
 
@@ -378,7 +381,7 @@ def feature_selection_variance(X, threshold=0.01, reset=True):
 SELECTOR_REGRESSOR = None
 
 
-def feature_selection_regressor(X, y=None, threshold=0.1, reset=True):
+def feature_selection_regressor(X, y=None, threshold=0.2, reset=True):
     global SELECTOR_REGRESSOR
     if reset:
         selection = int(threshold * X.shape[1])
@@ -390,6 +393,51 @@ def feature_selection_regressor(X, y=None, threshold=0.1, reset=True):
     return X[:, SELECTOR_REGRESSOR]
 
 
+def model_search(model, param_dict, n_iter=20):
+    print(f'Start time: {datetime.datetime.now()}')
+    start = time.perf_counter()
+    X, y = get_train_data()
+    name = type(model).__name__
+    model.fit(X, y)
+    end = time.perf_counter()
+    print(f'{name} - Sample Execution Runtime: {end - start} s')
+    model = clone(model)
+    print(f"Parameter combinations: {np.prod([len(v) for k, v in param_dict.items()])}")
+    clf = RandomizedSearchCV(model, param_dict, n_iter=n_iter, verbose=10, n_jobs=-1, scoring=SCORER)
+    clf.fit(X, y)
+    end = time.perf_counter()
+    print(f'{name} - RandomizedSearch Runtime: {end - start} s')
+    print(f'{name} Best Score: {clf.best_score_}')
+    print(f'{name} Best Parameters: {clf.best_params_}')
+    print(f'End time: {datetime.datetime.now()}')
+
+
+def validate_test(model):
+    start = time.perf_counter()
+    X, y = get_train_data()
+    scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
+    print(f'Validation Score: {sum(scores) / len(scores)}')
+    model.fit(X, y)
+    write_results(model)
+    end = time.perf_counter()
+    print(f'Runtime: {end - start} s')
+
+
+def param_search(model, param_space):
+    start = time.perf_counter()
+    stats = []
+    for param in param_space:
+        X, y = get_train_data(param)
+        model_start = time.perf_counter()
+        model = clone(model)
+        scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
+        model_end = time.perf_counter()
+        stats.append((sum(scores) / len(scores), model_end - model_start, param))
+        print(stats[-1])
+    print(f'Max: {stats[numpy.argmax([x[0] for x in stats])]}')
+    end = time.perf_counter()
+    print(f'Runtime: {end - start} s')
+
 # Thoughts:
 # Probably cannot use outlier detection as it removes samples from classes with fewer occurrences
 # Feature selection should be fine though^^
@@ -400,89 +448,54 @@ def feature_selection_regressor(X, y=None, threshold=0.1, reset=True):
 #                       subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
 #                       reg_lambda=10, num_parallel_tree=1, n_jobs=-1) -> Validation Score: 0.7871956816427264
 
+# XGB Classifier
+# param_dict = {
+#     'n_estimators': [500, 1000, 2000, 3000],
+#     'max_depth': [4, 5, 6, 7, 8, 9, 10],
+#     'grow_policy': ['lossguide'],
+#     'learning_rate': [0.1],
+#     'booster': ['gbtree'],
+#     'tree_method': ['gpu_hist'],
+#     'gamma': [1e-3],
+#     'min_child_weight': [2],
+#     'subsample': [0.7],
+#     'sampling_method': ['uniform'],
+#     'colsample_bytree': [0.6],
+#     'reg_alpha': [0.5],
+#     'reg_lambda': [10],
+#     'num_parallel_tree': [1],
+#     'n_jobs': [-1],
+#     'random_state': [42],
+# }
+# model = XGBClassifier(n_estimators=1000, max_depth=5, grow_policy='lossguide', learning_rate=0.1,
+                  # booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
+                  # subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
+                  # reg_lambda=10, num_parallel_tree=1, n_jobs=-1)
+
 def main():
     global TRAINING_DATA_X
     # TRAINING_DATA_X = "X_train.csv"
     TRAINING_DATA_X = "X_train_extracted.csv"
-    # TRAINING_DATA_X = "X_train_partial.csv"
-    # TRAINING_DATA_X = "X_train_extracted_partial.csv"
     global TRAINING_DATA_y
     TRAINING_DATA_y = "y_train.csv"
-    # TRAINING_DATA_y = "y_train_extracted.csv"
-    # TRAINING_DATA_y = "y_train_partial.csv"
-    # TRAINING_DATA_y = "y_train_extracted_partial.csv"
     global TEST_DATA_X
     # TEST_DATA_X = "X_test.csv"
     TEST_DATA_X = "X_test_extracted.csv"
 
     print(f'Start time: {datetime.datetime.now()}')
-    start = time.perf_counter()
+
     model = XGBClassifier(n_estimators=1000, max_depth=5, grow_policy='lossguide', learning_rate=0.1,
-                              booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
-                              subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
-                              reg_lambda=10, num_parallel_tree=1, n_jobs=-1)
-    X, y = get_train_data()
-    scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
-    print(f'Validation Score: {sum(scores) / len(scores)}')
-    model.fit(X, y)
-    write_results(model)
-    end = time.perf_counter()
+                          booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
+                          subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
+                          reg_lambda=10, num_parallel_tree=1, n_jobs=-1, random_state=42)
+
+    validate_test(model)
+
+    # param_search(model, [0.175, 0.2, 0.225])
+
+    # model_search(model, param_dict, 20)
+
     print(f'End time: {datetime.datetime.now()}')
-    print(f'Runtime: {end - start} s')
-
-    # print(f'Start time: {datetime.datetime.now()}')
-    # start = time.perf_counter()
-    # X, y = get_train_data()
-    # model = XGBClassifier()
-    # name = type(model).__name__
-    # model.fit(X, y)
-    # end = time.perf_counter()
-    # print(f'{name} - Sample Execution Runtime: {end - start} s')
-    # model = clone(model)
-    # param_dict = {
-    #     'n_estimators': [500, 1000, 2000, 3000],
-    #     'max_depth': [4, 5, 6, 7, 8, 9, 10],
-    #     'grow_policy': ['lossguide'],
-    #     'learning_rate': [0.1],
-    #     'booster': ['gbtree'],
-    #     'tree_method': ['gpu_hist'],
-    #     'gamma': [1e-3],
-    #     'min_child_weight': [2],
-    #     'subsample': [0.7],
-    #     'sampling_method': ['uniform'],
-    #     'colsample_bytree': [0.6],
-    #     'reg_alpha': [0.5],
-    #     'reg_lambda': [10],
-    #     'num_parallel_tree': [1],
-    #     'n_jobs': [-1],
-    #     'random_state': [42],
-    # }
-    # print(f"Parameter combinations: {np.prod([len(v) for k, v in param_dict.items()])}")
-    # n_iter = 20
-    # clf = RandomizedSearchCV(model, param_dict, n_iter=n_iter, verbose=10, n_jobs=-1, scoring=SCORER)
-    # clf.fit(X, y)
-    # end = time.perf_counter()
-    # print(f'{name} - RandomizedSearch Runtime: {end - start} s')
-    # print(f'{name} Best Score: {clf.best_score_}')
-    # print(f'{name} Best Parameters: {clf.best_params_}')
-    # print(f'End time: {datetime.datetime.now()}')
-
-    # print(f'Start time: {datetime.datetime.now()}')
-    # start = time.perf_counter()
-    # stats = []
-    # param_space = [0.1, 0.1125, 0.125, 0.1375, 0.15]
-    # for param in param_space:
-    #     X, y = get_train_data(param)
-    #     model = SVC()
-    #     model_start = time.perf_counter()
-    #     scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
-    #     model_end = time.perf_counter()
-    #     stats.append((sum(scores) / len(scores), model_end - model_start, param))
-    #     print(stats[-1])
-    # print(f'Max: {stats[numpy.argmax([x[0] for x in stats])]}')
-    # end = time.perf_counter()
-    # print(f'End time: {datetime.datetime.now()}')
-    # print(f'Runtime: {end - start} s')
 
 if __name__ == "__main__":
     main()
