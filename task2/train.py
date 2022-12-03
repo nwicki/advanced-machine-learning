@@ -54,7 +54,6 @@ def write_results(model):
 def write_train_data(X, y):
     columns = [f"x{x}" for x in range(X.shape[1])]
     pd.DataFrame(data=X, columns=columns).to_csv("X_train_extracted.csv", index=True, index_label='id')
-    pd.DataFrame(data=y, columns=["y"]).to_csv("y_train_extracted.csv", index=True, index_label='id')
 
 
 def write_test_data(X):
@@ -216,18 +215,104 @@ def PQRST_feature_extraction(ecg, waves, rpeaks):
 
 
 def HRV_feature_extraction(hrv_indices):
+    # 'HRV_MeanNN', 'HRV_SDNN', 'HRV_SDANN1', 'HRV_SDNNI1', 'HRV_SDANN2',
+    # 'HRV_SDNNI2', 'HRV_SDANN5', 'HRV_SDNNI5', 'HRV_RMSSD', 'HRV_SDSD',
+    # 'HRV_CVNN', 'HRV_CVSD', 'HRV_MedianNN', 'HRV_MadNN', 'HRV_MCVNN',
+    # 'HRV_IQRNN', 'HRV_Prc20NN', 'HRV_Prc80NN', 'HRV_pNN50', 'HRV_pNN20',
+    # 'HRV_MinNN', 'HRV_MaxNN', 'HRV_HTI', 'HRV_TINN', 'HRV_ULF', 'HRV_VLF',
+    # 'HRV_LF', 'HRV_HF', 'HRV_VHF', 'HRV_LFHF', 'HRV_LFn', 'HRV_HFn',
+    # 'HRV_LnHF', 'HRV_SD1', 'HRV_SD2', 'HRV_SD1SD2', 'HRV_S', 'HRV_CSI',
+    # 'HRV_CVI', 'HRV_CSI_Modified', 'HRV_PIP', 'HRV_IALS', 'HRV_PSS',
+    # 'HRV_PAS', 'HRV_GI', 'HRV_SI', 'HRV_AI', 'HRV_PI', 'HRV_C1d', 'HRV_C1a',
+    # 'HRV_SD1d', 'HRV_SD1a', 'HRV_C2d', 'HRV_C2a', 'HRV_SD2d', 'HRV_SD2a',
+    # 'HRV_Cd', 'HRV_Ca', 'HRV_SDNNd', 'HRV_SDNNa', 'HRV_DFA_alpha1',
+    # 'HRV_MFDFA_alpha1_Width', 'HRV_MFDFA_alpha1_Peak',
+    # 'HRV_MFDFA_alpha1_Mean', 'HRV_MFDFA_alpha1_Max',
+    # 'HRV_MFDFA_alpha1_Delta', 'HRV_MFDFA_alpha1_Asymmetry',
+    # 'HRV_MFDFA_alpha1_Fluctuation', 'HRV_MFDFA_alpha1_Increment',
+    # 'HRV_ApEn', 'HRV_SampEn', 'HRV_ShanEn', 'HRV_FuzzyEn', 'HRV_MSEn',
+    # 'HRV_CMSEn', 'HRV_RCMSEn', 'HRV_CD', 'HRV_HFD', 'HRV_KFD', 'HRV_LZC'
     features = [
         hrv_indices["HRV_MeanNN"],
         hrv_indices["HRV_SDNN"],
+        hrv_indices["HRV_SDANN1"],
+        hrv_indices["HRV_SDNNI1"],
+        hrv_indices["HRV_SDANN2"],
+        hrv_indices["HRV_SDNNI2"],
+        hrv_indices["HRV_SDANN5"],
+        hrv_indices["HRV_SDNNI5"],
         hrv_indices["HRV_RMSSD"],
+        hrv_indices["HRV_SDSD"],
+        hrv_indices["HRV_CVNN"],
+        hrv_indices["HRV_CVSD"],
         hrv_indices["HRV_MedianNN"],
+        hrv_indices["HRV_MadNN"],
+        hrv_indices["HRV_MCVNN"],
+        hrv_indices["HRV_IQRNN"],
+        hrv_indices["HRV_Prc20NN"],
+        hrv_indices["HRV_Prc80NN"],
         hrv_indices["HRV_pNN50"],
+        hrv_indices["HRV_pNN20"],
         hrv_indices["HRV_MinNN"],
         hrv_indices["HRV_MaxNN"],
+        hrv_indices["HRV_HTI"],
+        hrv_indices["HRV_TINN"],
+        hrv_indices["HRV_ULF"],
+        hrv_indices["HRV_VLF"],
         hrv_indices["HRV_LF"],
         hrv_indices["HRV_HF"],
+        hrv_indices["HRV_VHF"],
         hrv_indices["HRV_LFHF"],
+        hrv_indices["HRV_LFn"],
+        hrv_indices["HRV_HFn"],
         hrv_indices["HRV_LnHF"],
+        hrv_indices["HRV_SD1"],
+        hrv_indices["HRV_SD2"],
+        hrv_indices["HRV_SD1SD2"],
+        hrv_indices["HRV_S"],
+        hrv_indices["HRV_CSI"],
+        hrv_indices["HRV_CVI"],
+        hrv_indices["HRV_CSI_Modified"],
+        hrv_indices["HRV_PIP"],
+        hrv_indices["HRV_IALS"],
+        hrv_indices["HRV_PSS"],
+        hrv_indices["HRV_PAS"],
+        hrv_indices["HRV_GI"],
+        hrv_indices["HRV_SI"],
+        hrv_indices["HRV_AI"],
+        hrv_indices["HRV_PI"],
+        hrv_indices["HRV_C1d"],
+        hrv_indices["HRV_C1a"],
+        hrv_indices["HRV_SD1d"],
+        hrv_indices["HRV_SD1a"],
+        hrv_indices["HRV_C2d"],
+        hrv_indices["HRV_C2a"],
+        hrv_indices["HRV_SD2d"],
+        hrv_indices["HRV_SD2a"],
+        hrv_indices["HRV_Cd"],
+        hrv_indices["HRV_Ca"],
+        hrv_indices["HRV_SDNNd"],
+        hrv_indices["HRV_SDNNa"],
+        hrv_indices["HRV_DFA_alpha1"],
+        hrv_indices["HRV_MFDFA_alpha1_Width"],
+        hrv_indices["HRV_MFDFA_alpha1_Peak"],
+        hrv_indices["HRV_MFDFA_alpha1_Mean"],
+        hrv_indices["HRV_MFDFA_alpha1_Max"],
+        hrv_indices["HRV_MFDFA_alpha1_Delta"],
+        hrv_indices["HRV_MFDFA_alpha1_Asymmetry"],
+        hrv_indices["HRV_MFDFA_alpha1_Fluctuation"],
+        hrv_indices["HRV_MFDFA_alpha1_Increment"],
+        hrv_indices["HRV_ApEn"],
+        hrv_indices["HRV_SampEn"],
+        hrv_indices["HRV_ShanEn"],
+        hrv_indices["HRV_FuzzyEn"],
+        hrv_indices["HRV_MSEn"],
+        hrv_indices["HRV_CMSEn"],
+        hrv_indices["HRV_RCMSEn"],
+        hrv_indices["HRV_CD"],
+        hrv_indices["HRV_HFD"],
+        hrv_indices["HRV_KFD"],
+        hrv_indices["HRV_LZC"],
     ]
     features = [x.iloc[0] for x in features]
     return np.array(features)
@@ -304,8 +389,6 @@ def extract_features(X):
             try:
                 # Heart Rate Variability in time, frequency, and non-linear domain
                 hrv_indices = nk.hrv(rpeaks, sampling_rate)
-                print(hrv_indices.keys())
-                exit()
             except (KeyError, ValueError, IndexError):
                 hrv_indices = pd.read_csv("hrv_indices.csv")
 
@@ -318,6 +401,8 @@ def extract_features(X):
         X_new.append(features)
 
     X_new = np.array(X_new)
+
+    X_new[np.isinf(X_new)] = np.nan
 
     return X_new
 
@@ -474,13 +559,13 @@ def param_search(model, param_space):
 
 def main():
     global TRAINING_DATA_X
-    # TRAINING_DATA_X = "X_train.csv"
-    TRAINING_DATA_X = "X_train_extracted.csv"
+    TRAINING_DATA_X = "X_train.csv"
+    # TRAINING_DATA_X = "X_train_extracted.csv"
     global TRAINING_DATA_y
     TRAINING_DATA_y = "y_train.csv"
     global TEST_DATA_X
-    # TEST_DATA_X = "X_test.csv"
-    TEST_DATA_X = "X_test_extracted.csv"
+    TEST_DATA_X = "X_test.csv"
+    # TEST_DATA_X = "X_test_extracted.csv"
 
     print(f'Start time: {datetime.datetime.now()}')
 
