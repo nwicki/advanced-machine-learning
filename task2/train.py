@@ -1,3 +1,4 @@
+import pickle
 import warnings
 import json
 import numpy as np
@@ -12,11 +13,11 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import DotProduct, WhiteKernel
 from sklearn.model_selection import train_test_split, cross_validate, GridSearchCV, RandomizedSearchCV
 from sklearn.impute import SimpleImputer, IterativeImputer
-from sklearn.preprocessing import RobustScaler, MinMaxScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 from sklearn.feature_selection import SelectPercentile, VarianceThreshold
 from xgboost import XGBRegressor, XGBClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
-from catboost import CatBoostRegressor
+from catboost import CatBoostRegressor, CatBoostClassifier
 from sklearn.neighbors import KNeighborsRegressor, LocalOutlierFactor
 from sklearn.neural_network import MLPRegressor
 from sklearn.base import clone
@@ -40,9 +41,14 @@ def StackedModel():
                               subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
                               reg_lambda=10, num_parallel_tree=1, n_jobs=-1)),
         # ('svc', SVC(C=50.0, tol=1e-4, cache_size=1024, class_weight='balanced'))
+        ('lgbm', LGBMClassifier(max_depth=6, learning_rate=0.01, n_estimators=1500, min_split_gain=0.1,
+                                min_child_weight=0.01, min_child_samples=40, subsample=0.6, subsample_freq=5,
+                                colsample_bytree=0.6, reg_alpha=0.1, reg_lambda=0.5, n_jobs=-1)),
+        ('cat', CatBoostClassifier(verbose=False))
 
     ]
-    return StackingClassifier(estimators, final_estimator=LogisticRegression(class_weight='balanced'), n_jobs=-1)
+    return StackingClassifier(estimators, final_estimator=LogisticRegression(
+        class_weight='balanced', max_iter=500, n_jobs=-1), n_jobs=-1)
 
 
 def write_results(model):
@@ -72,7 +78,7 @@ def get_test_data():
         assert len(X) == length
         write_test_data(X)
     X = impute_missing_values_simple(X, reset=False)
-    X = min_max_scale(X, reset=False)
+    X = standard_scale(X, reset=False)
     X = feature_selection_variance(X, reset=False)
     X = feature_selection_regressor(X, reset=False)
     return X
@@ -94,7 +100,7 @@ def get_train_data(param=None):
         print(f"Train data feature extraction: {time.perf_counter() - start} s")
         write_train_data(X, y)
     X = impute_missing_values_simple(X)
-    X = min_max_scale(X)
+    X = standard_scale(X)
     X = feature_selection_variance(X)
     X = feature_selection_regressor(X, y)
     return X, y
@@ -110,29 +116,23 @@ def plot_values(values, markers=None):
     show()
 
 
-def PQRST_features(ecg, ecg_points, ecg_points_adjusted, func):
+def get_amplitude(ecg_signal, ecg_points, func, index):
+    indices = ecg_points[:, index]
+    indices = indices[(0 <= indices) & (indices < len(ecg_signal))]
+    if len(indices) == 0:
+        return 0
+    return func(ecg_signal[indices])
+
+
+def PQRST_features(ecg_signal, ecg_points, ecg_points_adjusted, func):
     # Compress adjusted ecg_points over all signals
     ecg_points_compressed = func(ecg_points_adjusted, axis=0)
     # Use ecg_points as indices
     ecg_points = np.array(ecg_points, dtype=int)
-    # R_Peak
-    r_indices = ecg_points[:, 5]
-    r_indices = r_indices[(0 <= r_indices) & (r_indices < len(ecg))]
-    r_amplitude = func(ecg[r_indices])
-    # Q_Peak
-    q_indices = ecg_points[:, 4]
-    q_indices = q_indices[(0 <= q_indices) & (q_indices < len(ecg))]
-    if len(q_indices) == 0:
-        q_amplitude = 0
-    else:
-        q_amplitude = func(ecg[q_indices])
-    # S_Peak
-    s_indices = ecg_points[:, -4]
-    s_indices = s_indices[(0 <= s_indices) & (s_indices < len(ecg))]
-    if len(q_indices) == 0:
-        s_amplitude = 0
-    else:
-        s_amplitude = func(ecg[s_indices])
+
+    # Get amplitudes cleaned
+    amplitudes = np.array([get_amplitude(ecg_signal, ecg_points, func, x) for x in range(ecg_points.shape[1])])
+
     # P_Onset to R_Onset
     pr_interval = ecg_points_compressed[3] - ecg_points_compressed[0]
     # P_Offset to R_Onset
@@ -144,22 +144,23 @@ def PQRST_features(ecg, ecg_points, ecg_points_adjusted, func):
     # R_Offset to T_Onset
     st_segment = ecg_points_compressed[-3] - ecg_points_compressed[-5]
     # RS Ratio
-    rs_ratio = s_amplitude / r_amplitude
+    rs_ratio = amplitudes[7] / amplitudes[5]
+    # RQ Ratio
+    rq_ratio = amplitudes[4] / amplitudes[5]
     # QRS amplitude
-    qrs_amplitude = q_amplitude + r_amplitude + s_amplitude
+    qrs_amplitude = amplitudes[4] + amplitudes[5] + amplitudes[6]
 
     features = np.array([
-        r_amplitude,
-        q_amplitude,
         pr_interval,
         pr_segment,
         qrs_complex,
         qt_interval,
         st_segment,
         rs_ratio,
+        rq_ratio,
         qrs_amplitude
     ])
-    return features
+    return np.concatenate((amplitudes, features))
 
 
 def PQRST_feature_extraction(ecg, waves, rpeaks):
@@ -215,23 +216,6 @@ def PQRST_feature_extraction(ecg, waves, rpeaks):
 
 
 def HRV_feature_extraction(hrv_indices):
-    # 'HRV_MeanNN', 'HRV_SDNN', 'HRV_SDANN1', 'HRV_SDNNI1', 'HRV_SDANN2',
-    # 'HRV_SDNNI2', 'HRV_SDANN5', 'HRV_SDNNI5', 'HRV_RMSSD', 'HRV_SDSD',
-    # 'HRV_CVNN', 'HRV_CVSD', 'HRV_MedianNN', 'HRV_MadNN', 'HRV_MCVNN',
-    # 'HRV_IQRNN', 'HRV_Prc20NN', 'HRV_Prc80NN', 'HRV_pNN50', 'HRV_pNN20',
-    # 'HRV_MinNN', 'HRV_MaxNN', 'HRV_HTI', 'HRV_TINN', 'HRV_ULF', 'HRV_VLF',
-    # 'HRV_LF', 'HRV_HF', 'HRV_VHF', 'HRV_LFHF', 'HRV_LFn', 'HRV_HFn',
-    # 'HRV_LnHF', 'HRV_SD1', 'HRV_SD2', 'HRV_SD1SD2', 'HRV_S', 'HRV_CSI',
-    # 'HRV_CVI', 'HRV_CSI_Modified', 'HRV_PIP', 'HRV_IALS', 'HRV_PSS',
-    # 'HRV_PAS', 'HRV_GI', 'HRV_SI', 'HRV_AI', 'HRV_PI', 'HRV_C1d', 'HRV_C1a',
-    # 'HRV_SD1d', 'HRV_SD1a', 'HRV_C2d', 'HRV_C2a', 'HRV_SD2d', 'HRV_SD2a',
-    # 'HRV_Cd', 'HRV_Ca', 'HRV_SDNNd', 'HRV_SDNNa', 'HRV_DFA_alpha1',
-    # 'HRV_MFDFA_alpha1_Width', 'HRV_MFDFA_alpha1_Peak',
-    # 'HRV_MFDFA_alpha1_Mean', 'HRV_MFDFA_alpha1_Max',
-    # 'HRV_MFDFA_alpha1_Delta', 'HRV_MFDFA_alpha1_Asymmetry',
-    # 'HRV_MFDFA_alpha1_Fluctuation', 'HRV_MFDFA_alpha1_Increment',
-    # 'HRV_ApEn', 'HRV_SampEn', 'HRV_ShanEn', 'HRV_FuzzyEn', 'HRV_MSEn',
-    # 'HRV_CMSEn', 'HRV_RCMSEn', 'HRV_CD', 'HRV_HFD', 'HRV_KFD', 'HRV_LZC'
     features = [
         hrv_indices["HRV_MeanNN"],
         hrv_indices["HRV_SDNN"],
@@ -418,6 +402,17 @@ def min_max_scale(X, interval=(-10, 10), reset=True):
     return MIN_MAX_SCALER.transform(X)
 
 
+STANDARD_SCALER = None
+
+
+def standard_scale(X, reset=True):
+    global STANDARD_SCALER
+    if reset:
+        STANDARD_SCALER = StandardScaler(with_mean=False, with_std=False)
+        STANDARD_SCALER.fit(X)
+    return STANDARD_SCALER.transform(X)
+
+
 ROBUST_SCALER = None
 
 
@@ -479,7 +474,6 @@ def feature_selection_regressor(X, y=None, threshold=0.2, reset=True):
 
 
 def model_search(model, param_dict, n_iter=20):
-    print(f'Start time: {datetime.datetime.now()}')
     start = time.perf_counter()
     X, y = get_train_data()
     name = type(model).__name__
@@ -494,15 +488,15 @@ def model_search(model, param_dict, n_iter=20):
     print(f'{name} - RandomizedSearch Runtime: {end - start} s')
     print(f'{name} Best Score: {clf.best_score_}')
     print(f'{name} Best Parameters: {clf.best_params_}')
-    print(f'End time: {datetime.datetime.now()}')
 
 
-def validate_test(model):
+def validate_test(model, model_path="model.pickle"):
     start = time.perf_counter()
     X, y = get_train_data()
     scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
     print(f'Validation Score: {sum(scores) / len(scores)}')
     model.fit(X, y)
+    pickle.dump(model, open("model.pickle", "wb"))
     write_results(model)
     end = time.perf_counter()
     print(f'Runtime: {end - start} s')
@@ -527,61 +521,38 @@ def param_search(model, param_space):
 # Probably cannot use outlier detection as it removes samples from classes with fewer occurrences
 # Feature selection should be fine though^^
 # Model can still be improved drastically
-# model = SVC(C=50.0, tol=1e-4, cache_size=1024) -> Validation Score: 0.7793457623890372
-# model = XGBClassifier(n_estimators=1000, max_depth=5, grow_policy= 'lossguide', learning_rate=0.1,
-#                       booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
-#                       subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
-#                       reg_lambda=10, num_parallel_tree=1, n_jobs=-1) -> Validation Score: 0.7871956816427264
 
-# XGB Classifier
-# param_dict = {
-#     'n_estimators': [500, 1000, 2000, 3000],
-#     'max_depth': [4, 5, 6, 7, 8, 9, 10],
-#     'grow_policy': ['lossguide'],
-#     'learning_rate': [0.1],
-#     'booster': ['gbtree'],
-#     'tree_method': ['gpu_hist'],
-#     'gamma': [1e-3],
-#     'min_child_weight': [2],
-#     'subsample': [0.7],
-#     'sampling_method': ['uniform'],
-#     'colsample_bytree': [0.6],
-#     'reg_alpha': [0.5],
-#     'reg_lambda': [10],
-#     'num_parallel_tree': [1],
-#     'n_jobs': [-1],
-#     'random_state': [42],
-# }
-# model = XGBClassifier(n_estimators=1000, max_depth=5, grow_policy='lossguide', learning_rate=0.1,
-                  # booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
-                  # subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
-                  # reg_lambda=10, num_parallel_tree=1, n_jobs=-1)
+# Catboost Validation Score: 0.8106320259042035 StandardScale
 
 def main():
     global TRAINING_DATA_X
-    TRAINING_DATA_X = "X_train.csv"
-    # TRAINING_DATA_X = "X_train_extracted.csv"
+    # TRAINING_DATA_X = "X_train.csv"
+    TRAINING_DATA_X = "X_train_extracted.csv"
     global TRAINING_DATA_y
     TRAINING_DATA_y = "y_train.csv"
     global TEST_DATA_X
-    TEST_DATA_X = "X_test.csv"
-    # TEST_DATA_X = "X_test_extracted.csv"
+    # TEST_DATA_X = "X_test.csv"
+    TEST_DATA_X = "X_test_extracted.csv"
 
     print(f'Start time: {datetime.datetime.now()}')
 
-    model = XGBClassifier(n_estimators=1000, max_depth=5, grow_policy='lossguide', learning_rate=0.1,
-                          booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
-                          subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
-                          reg_lambda=10, num_parallel_tree=1, n_jobs=-1, random_state=42)
+    model = LGBMClassifier(max_depth=6, learning_rate=0.01, n_estimators=1500, min_split_gain=0.1,
+                                min_child_weight=0.01, min_child_samples=40, subsample=0.6, subsample_freq=5,
+                                colsample_bytree=0.6, reg_alpha=0.1, reg_lambda=0.5, n_jobs=-1)
 
     validate_test(model)
 
     # param_search(model, [0.175, 0.2, 0.225])
 
+    # model = LGBMClassifier()
+    #
+    # param_dict = {
+    #     "n_jobs": [-1]
+    # }
+    #
     # model_search(model, param_dict, 20)
 
     print(f'End time: {datetime.datetime.now()}')
 
 if __name__ == "__main__":
     main()
-6
