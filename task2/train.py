@@ -5,16 +5,14 @@ import heartpy.exceptions
 import numpy as np
 import pandas as pd
 from sklearn.metrics import make_scorer, f1_score
-from sklearn.svm import SVC
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import ExtraTreesRegressor, VotingClassifier
+from sklearn.ensemble import VotingClassifier
 from sklearn.model_selection import cross_validate, RandomizedSearchCV
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 from sklearn.feature_selection import VarianceThreshold
-from xgboost import XGBRegressor, XGBClassifier
+from xgboost import XGBClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
-from catboost import CatBoostRegressor, CatBoostClassifier
+from catboost import CatBoostClassifier
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.base import clone
 import time
@@ -39,9 +37,9 @@ def XGB_Classifier():
 
 
 def LGBM_Classifier():
-    return LGBMClassifier(max_depth=6, learning_rate=0.01, n_estimators=1500, min_split_gain=0.1,
-                          min_child_weight=0.01, min_child_samples=40, subsample=0.6, subsample_freq=5,
-                          colsample_bytree=0.6, reg_alpha=0.1, reg_lambda=0.5, n_jobs=-1, random_state=42)
+    return LGBMClassifier(max_depth=11, learning_rate=0.01, n_estimators=2400, min_split_gain=0.1,
+                          min_child_weight=0.01, min_child_samples=40, subsample=0.7, subsample_freq=5,
+                          colsample_bytree=0.6, reg_alpha=0.1, reg_lambda=0.8, n_jobs=-1, random_state=42)
 
 
 def CatBoost_Classifier():
@@ -606,29 +604,36 @@ def main():
     global TRAINING_DATA_y
     TRAINING_DATA_y = "y_train.csv"
     global TEST_DATA_X
-    TEST_DATA_X = "X_test.csv"
-    # TEST_DATA_X = "X_test_extracted.csv"
+    # TEST_DATA_X = "X_test.csv"
+    TEST_DATA_X = "X_test_extracted.csv"
 
     print(f'Start time: {datetime.datetime.now()}')
 
     model = LGBM_Classifier()
-    test_model(model)
+    validate_test_model(model)
 
     # param_search(model, [0.11, 0.12, 0.13, 0.14])
 
-    # model = CatBoostClassifier(n_estimators=1000, max_depth=6, learning_rate=0.1, task_type="GPU", gpu_ram_part=0.2, verbose=False)
+    # model = LGBMClassifier()
     #
     # param_dict = {
-    #     "n_estimators": [100, 500, 1000],
-    #     "max_depth": [4, 6, 8],
-    #     "learning_rate": [0.1, 0.01, 0.001],
-    #     "task_type": ["GPU"],
-    #     "gpu_ram_part": [0.2],
+    #     "max_depth": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+    #     "learning_rate": [0.01],
+    #     "n_estimators": [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000],
+    #     "min_split_gain": [0.1],
+    #     "min_child_weight": [0.01],
+    #     "min_child_samples": [40],
+    #     "subsample": [0.5, 0.6, 0.7],
+    #     "subsample_freq": [2, 5, 10],
+    #     "colsample_bytree": [0.5, 0.6, 0.7],
+    #     "reg_alpha": [0.1, 0.2, 0.5, 0.8],
+    #     "reg_lambda": [0.5, 0.8, 1, 2, 5],
+    #     "n_jobs": [-1],
     #     "random_state": [42]
     # }
-    #
-    # model_search(model, param_dict, 20)
-    #
+
+    # model_search(model, param_dict, 100)
+
     print(f'End time: {datetime.datetime.now()}')
 
 if __name__ == "__main__":
