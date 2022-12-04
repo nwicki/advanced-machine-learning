@@ -1,25 +1,21 @@
 import pickle
 import warnings
 import json
+import heartpy.exceptions
 import numpy as np
 import pandas as pd
 from sklearn.metrics import make_scorer, f1_score
-from sklearn.svm import SVR, SVC
+from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
-from sklearn.experimental import enable_iterative_imputer
-from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor, AdaBoostRegressor, \
-    HistGradientBoostingRegressor, IsolationForest, StackingRegressor, StackingClassifier
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import DotProduct, WhiteKernel
-from sklearn.model_selection import train_test_split, cross_validate, GridSearchCV, RandomizedSearchCV
-from sklearn.impute import SimpleImputer, IterativeImputer
+from sklearn.ensemble import ExtraTreesRegressor, VotingClassifier
+from sklearn.model_selection import cross_validate, RandomizedSearchCV
+from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
-from sklearn.feature_selection import SelectPercentile, VarianceThreshold
+from sklearn.feature_selection import VarianceThreshold
 from xgboost import XGBRegressor, XGBClassifier
 from lightgbm import LGBMRegressor, LGBMClassifier
 from catboost import CatBoostRegressor, CatBoostClassifier
-from sklearn.neighbors import KNeighborsRegressor, LocalOutlierFactor
-from sklearn.neural_network import MLPRegressor
+from sklearn.neighbors import LocalOutlierFactor
 from sklearn.base import clone
 import time
 import numpy
@@ -27,6 +23,7 @@ import datetime
 import biosppy.signals.ecg as ecg
 from matplotlib.pyplot import plot, show
 import neurokit2 as nk
+import heartpy as hp
 
 TRAINING_DATA_X = ""
 TEST_DATA_X = ""
@@ -34,21 +31,34 @@ TRAINING_DATA_y = ""
 SCORER = make_scorer(f1_score, average='micro')
 
 
-def StackedModel():
+def XGB_Classifier():
+    return XGBClassifier(n_estimators=1000, max_depth=5, grow_policy='lossguide', learning_rate=0.1,
+                         tree_method='gpu_hist', gamma=1e-3, min_child_weight=2, subsample=0.7,
+                         sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5, reg_lambda=10,
+                         num_parallel_tree=1, n_jobs=-1, random_state=42)
+
+
+def LGBM_Classifier():
+    return LGBMClassifier(max_depth=6, learning_rate=0.01, n_estimators=1500, min_split_gain=0.1,
+                          min_child_weight=0.01, min_child_samples=40, subsample=0.6, subsample_freq=5,
+                          colsample_bytree=0.6, reg_alpha=0.1, reg_lambda=0.5, n_jobs=-1, random_state=42)
+
+
+def CatBoost_Classifier():
+    return CatBoostClassifier(n_estimators=1000, max_depth=6, learning_rate=0.1,
+                              task_type="GPU", gpu_ram_part=0.2, verbose=False)
+
+
+def VotingModel():
     estimators = [
-        ('xgb', XGBClassifier(n_estimators=1000, max_depth=5, grow_policy='lossguide', learning_rate=0.1,
-                              booster='gbtree', tree_method='gpu_hist', gamma=1e-3, min_child_weight=2,
-                              subsample=0.7, sampling_method='uniform', colsample_bytree=0.6, reg_alpha=0.5,
-                              reg_lambda=10, num_parallel_tree=1, n_jobs=-1)),
+        ('xgb', XGB_Classifier()),
         # ('svc', SVC(C=50.0, tol=1e-4, cache_size=1024, class_weight='balanced'))
-        ('lgbm', LGBMClassifier(max_depth=6, learning_rate=0.01, n_estimators=1500, min_split_gain=0.1,
-                                min_child_weight=0.01, min_child_samples=40, subsample=0.6, subsample_freq=5,
-                                colsample_bytree=0.6, reg_alpha=0.1, reg_lambda=0.5, n_jobs=-1)),
-        ('cat', CatBoostClassifier(verbose=False))
+        ('lgbm', LGBM_Classifier()),
+        # ('cat', CatBoostClassifier(n_estimators=1000, max_depth=6, learning_rate=0.1,
+        #                            task_type="GPU", gpu_ram_part=0.2, verbose=False))
 
     ]
-    return StackingClassifier(estimators, final_estimator=LogisticRegression(
-        class_weight='balanced', max_iter=500, n_jobs=-1), n_jobs=-1)
+    return VotingClassifier(estimators)
 
 
 def write_results(model):
@@ -124,6 +134,65 @@ def get_amplitude(ecg_signal, ecg_points, func, index):
     return func(ecg_signal[indices])
 
 
+def get_statistical_values(array):
+    return np.array([
+        np.mean(array),
+        np.median(array),
+        np.min(array),
+        np.max(array),
+        np.std(array)
+    ])
+
+
+def get_interval(peaks):
+    if 1 < len(peaks):
+        interval = peaks[1:] - peaks[:-1]
+        return get_statistical_values(interval)
+    return np.zeros(5)
+
+
+def biosppy_feature_extraction(signal, sampling_rate):
+    r_peaks, = ecg.engzee_segmenter(signal, sampling_rate)
+    beats, _ = ecg.extract_heartbeats(signal, r_peaks, sampling_rate)
+
+    heartbeat_len = 180
+    substitute = np.array(heartbeat_len * [np.nan])
+
+    try:
+        heartbeat_mean = np.mean(beats, axis=0)
+    except ValueError:
+        heartbeat_mean = substitute
+    try:
+        heartbeat_median = np.median(beats, axis=0)
+    except ValueError:
+        heartbeat_median = substitute
+    try:
+        heartbeat_min = np.min(beats, axis=0)
+    except ValueError:
+        heartbeat_min = substitute
+    try:
+        heartbeat_max = np.max(beats, axis=0)
+    except ValueError:
+        heartbeat_max = substitute
+    try:
+        heartbeat_std = np.std(beats, axis=0)
+    except ValueError:
+        heartbeat_std = substitute
+
+    if type(heartbeat_mean) is not np.ndarray or len(heartbeat_mean) != heartbeat_len:
+        heartbeat_mean = substitute
+    if type(heartbeat_median) is not np.ndarray or len(heartbeat_median) != heartbeat_len:
+        heartbeat_median = substitute
+    if type(heartbeat_min) is not np.ndarray or len(heartbeat_min) != heartbeat_len:
+        heartbeat_min = substitute
+    if type(heartbeat_max) is not np.ndarray or len(heartbeat_max) != heartbeat_len:
+        heartbeat_max = substitute
+    if type(heartbeat_std) is not np.ndarray or len(heartbeat_std) != heartbeat_len:
+        heartbeat_std = substitute
+
+    return np.concatenate((heartbeat_mean, heartbeat_median, heartbeat_min, heartbeat_max, heartbeat_std)), r_peaks
+
+
 def PQRST_features(ecg_signal, ecg_points, ecg_points_adjusted, func):
     # Compress adjusted ecg_points over all signals
     ecg_points_compressed = func(ecg_points_adjusted, axis=0)
@@ -184,24 +253,11 @@ def PQRST_feature_extraction(ecg, waves, rpeaks):
         indices = np.where(np.isnan(ecg_points))
         ecg_points[indices] = np.take(feature_median, indices[1])
 
-    rpeaks = ecg_points[:, 5]
-    if 1 < len(rpeaks):
-        rr_interval = rpeaks[1:] - rpeaks[:-1]
-        rr_interval = np.array([
-            np.mean(rr_interval),
-            np.median(rr_interval),
-            np.min(rr_interval),
-            np.max(rr_interval),
-            np.std(rr_interval)
-        ])
-    else:
-        rr_interval = np.zeros(5)
+    intervals = np.concatenate([get_interval(ecg_points[:, x]) for x in range(ecg_points.shape[1])])
 
     ref_r = ecg_points[0, 5]
-    r_offset = np.repeat(rpeaks.reshape(-1, 1) - ref_r, ecg_points.shape[1], axis=1)
+    r_offset = np.repeat(ecg_points[:, 5].reshape(-1, 1) - ref_r, ecg_points.shape[1], axis=1)
     ecg_points_adjusted = ecg_points - r_offset
-    # ecg_points_adjusted = impute_mean_values(ecg_points_adjusted)
-    # ecg_points_adjusted = ecg_points_adjusted[local_outlier_detection(ecg_points_adjusted)]
 
     features = np.concatenate((
         PQRST_features(ecg, ecg_points, ecg_points_adjusted, np.mean),
@@ -209,7 +265,7 @@ def PQRST_feature_extraction(ecg, waves, rpeaks):
         PQRST_features(ecg, ecg_points, ecg_points_adjusted, np.min),
         PQRST_features(ecg, ecg_points, ecg_points_adjusted, np.max),
         PQRST_features(ecg, ecg_points, ecg_points_adjusted, np.std),
-        rr_interval
+        intervals
     ))
 
     return features
@@ -302,6 +358,68 @@ def HRV_feature_extraction(hrv_indices):
     return np.array(features)
 
 
+def neurokit_feature_extraction(signal, sampling_rate, biosppy_r_peaks):
+    ecg_cleaned = nk.ecg_clean(signal, sampling_rate)
+    _, rpeaks = nk.ecg_peaks(ecg_cleaned, sampling_rate)
+
+    if len(rpeaks["ECG_R_Peaks"]) == 0:
+        if len(biosppy_r_peaks) != 0:
+            rpeaks["ECG_R_Peaks"] = biosppy_r_peaks
+        else:
+            rpeaks["ECG_R_Peaks"] = np.array(180 * [np.nan])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate)
+        except Exception:
+            waves = json.load(open("waves.txt"))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            # Heart Rate Variability in time, frequency, and non-linear domain
+            hrv_indices = nk.hrv(rpeaks, sampling_rate)
+        except Exception:
+            hrv_indices = pd.read_csv("hrv_indices.csv")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            heartbeat_length = np.array([len(nk.ecg_segment(ecg_cleaned, sampling_rate=sampling_rate)["1"])])
+        except Exception:
+            heartbeat_length = np.array([np.nan])
+        try:
+            quality = nk.ecg_quality(ecg_cleaned, sampling_rate=sampling_rate)
+        except Exception:
+            quality = np.array([np.nan])
+        try:
+            rate = nk.ecg_rate(ecg_cleaned, sampling_rate)
+        except Exception:
+            rate = np.array([np.nan])
+        try:
+            rsp = nk.ecg_rsp(rate, sampling_rate)
+        except Exception:
+            rsp = np.array([np.nan])
+
+    return np.concatenate((
+        heartbeat_length,
+        get_statistical_values(quality),
+        get_statistical_values(rate),
+        get_statistical_values(rsp),
+        PQRST_feature_extraction(ecg_cleaned, waves, rpeaks),
+        HRV_feature_extraction(hrv_indices)))
+
+def heartpy_feature_extraction(signal, sampling_rate):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            _, measures = hp.process(signal, sampling_rate)
+            return np.array([v for k, v in measures.items()])
+        except heartpy.exceptions.BadSignalWarning:
+            return pickle.load(open("heartpy_features.pickle", "rb"))
+
+
 def extract_features(X):
     X_new = []
     sampling_rate = 300
@@ -309,77 +427,19 @@ def extract_features(X):
         print(f"Process sample: {i}")
         x = x[~np.isnan(x)]
 
+        # Heartpy Feature Extraction
+        heartpy_features = heartpy_feature_extraction(x, sampling_rate)
+
         # Biosppy Feature Extraction
-        r_peaks, = ecg.engzee_segmenter(x, sampling_rate)
-        beats, _ = ecg.extract_heartbeats(x, r_peaks, sampling_rate)
-
-        heartbeat_len = 180
-        substitute = np.array(heartbeat_len * [np.nan])
-
-        try:
-            heartbeat_mean = np.mean(beats, axis=0)
-        except ValueError:
-            heartbeat_mean = substitute
-        try:
-            heartbeat_median = np.median(beats, axis=0)
-        except ValueError:
-            heartbeat_median = substitute
-        try:
-            heartbeat_min = np.min(beats, axis=0)
-        except ValueError:
-            heartbeat_min = substitute
-        try:
-            heartbeat_max = np.max(beats, axis=0)
-        except ValueError:
-            heartbeat_max = substitute
-        try:
-            heartbeat_std = np.std(beats, axis=0)
-        except ValueError:
-            heartbeat_std = substitute
-
-        if type(heartbeat_mean) is not np.ndarray or len(heartbeat_mean) != heartbeat_len:
-            heartbeat_mean = substitute
-        if type(heartbeat_median) is not np.ndarray or len(heartbeat_median) != heartbeat_len:
-            heartbeat_median = substitute
-        if type(heartbeat_min) is not np.ndarray or len(heartbeat_min) != heartbeat_len:
-            heartbeat_min = substitute
-        if type(heartbeat_max) is not np.ndarray or len(heartbeat_max) != heartbeat_len:
-            heartbeat_max = substitute
-        if type(heartbeat_std) is not np.ndarray or len(heartbeat_std) != heartbeat_len:
-            heartbeat_std = substitute
-
-        features = np.concatenate((heartbeat_mean, heartbeat_median, heartbeat_min, heartbeat_max, heartbeat_std))
+        biosppy_features, r_peaks = biosppy_feature_extraction(x, sampling_rate)
 
         # Neurokit Feature Extraction
-        ecg_cleaned = np.array(nk.ecg_clean(x, sampling_rate))
-        _, rpeaks = nk.ecg_peaks(ecg_cleaned, sampling_rate)
-
-        if len(rpeaks["ECG_R_Peaks"]) == 0:
-            if len(r_peaks) != 0:
-                rpeaks["ECG_R_Peaks"] = r_peaks
-            else:
-                rpeaks["ECG_R_Peaks"] = np.array(heartbeat_len * [np.nan])
-
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            try:
-                _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate)
-            except (KeyError, ValueError, ZeroDivisionError):
-                waves = json.load(open("waves.txt"))
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            try:
-                # Heart Rate Variability in time, frequency, and non-linear domain
-                hrv_indices = nk.hrv(rpeaks, sampling_rate)
-            except (KeyError, ValueError, IndexError):
-                hrv_indices = pd.read_csv("hrv_indices.csv")
+        neurokit_features = neurokit_feature_extraction(x, sampling_rate, r_peaks)
 
         features = np.concatenate((
-            features,
-            PQRST_feature_extraction(ecg_cleaned, waves, rpeaks),
-            HRV_feature_extraction(hrv_indices),
+            biosppy_features,
+            neurokit_features,
+            heartpy_features
         ))
 
         X_new.append(features)
@@ -461,11 +521,11 @@ def feature_selection_variance(X, threshold=0.01, reset=True):
 SELECTOR_REGRESSOR = None
 
 
-def feature_selection_regressor(X, y=None, threshold=0.2, reset=True):
+def feature_selection_regressor(X, y=None, threshold=0.12, reset=True):
     global SELECTOR_REGRESSOR
     if reset:
         selection = int(threshold * X.shape[1])
-        model = ExtraTreesRegressor()
+        model = LGBMRegressor()
         model.fit(X, y)
         indexed = list(zip(model.feature_importances_, range(len(model.feature_importances_))))
         SELECTOR_REGRESSOR = sorted(indexed)[-selection:]
@@ -482,7 +542,7 @@ def model_search(model, param_dict, n_iter=20):
     print(f'{name} - Sample Execution Runtime: {end - start} s')
     model = clone(model)
     print(f"Parameter combinations: {np.prod([len(v) for k, v in param_dict.items()])}")
-    clf = RandomizedSearchCV(model, param_dict, n_iter=n_iter, verbose=10, n_jobs=-1, scoring=SCORER)
+    clf = RandomizedSearchCV(model, param_dict, n_iter=n_iter, verbose=10, n_jobs=1, scoring=SCORER)
     clf.fit(X, y)
     end = time.perf_counter()
     print(f'{name} - RandomizedSearch Runtime: {end - start} s')
@@ -490,24 +550,45 @@ def model_search(model, param_dict, n_iter=20):
     print(f'{name} Best Parameters: {clf.best_params_}')
 
 
-def validate_test(model, model_path="model.pickle"):
+def test_model(model=None, model_path=None):
+    start = time.perf_counter()
+    if model is None:
+        if model_path is None:
+            print(f"No model path provided")
+        model = pickle.load(open(model_path, "rb"))
+    else:
+        X, y = get_train_data()
+        model.fit(X, y)
+        pickle.dump(model, open("model.pickle", "wb"))
+    write_results(model)
+    end = time.perf_counter()
+    print(f'Testing Runtime: {end - start} s')
+
+
+def validate_model(model):
+    print(f"Validating model: {type(model).__name__}")
     start = time.perf_counter()
     X, y = get_train_data()
     scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
     print(f'Validation Score: {sum(scores) / len(scores)}')
-    model.fit(X, y)
-    pickle.dump(model, open("model.pickle", "wb"))
-    write_results(model)
     end = time.perf_counter()
-    print(f'Runtime: {end - start} s')
+    print(f'Validation Runtime: {end - start} s')
+
+
+def validate_test_model(model):
+    start = time.perf_counter()
+    validate_model(model)
+    test_model(model)
+    end = time.perf_counter()
+    print(f'Validation & Testing Runtime: {end - start} s')
 
 
 def param_search(model, param_space):
     start = time.perf_counter()
     stats = []
     for param in param_space:
-        X, y = get_train_data(param)
         model_start = time.perf_counter()
+        X, y = get_train_data(param)
         model = clone(model)
         scores = cross_validate(model, X, y, cv=5, scoring=SCORER, n_jobs=-1)["test_score"]
         model_end = time.perf_counter()
@@ -517,12 +598,6 @@ def param_search(model, param_space):
     end = time.perf_counter()
     print(f'Runtime: {end - start} s')
 
-# Thoughts:
-# Probably cannot use outlier detection as it removes samples from classes with fewer occurrences
-# Feature selection should be fine though^^
-# Model can still be improved drastically
-
-# Catboost Validation Score: 0.8106320259042035 StandardScale
 
 def main():
     global TRAINING_DATA_X
@@ -531,27 +606,29 @@ def main():
     global TRAINING_DATA_y
     TRAINING_DATA_y = "y_train.csv"
     global TEST_DATA_X
-    # TEST_DATA_X = "X_test.csv"
-    TEST_DATA_X = "X_test_extracted.csv"
+    TEST_DATA_X = "X_test.csv"
+    # TEST_DATA_X = "X_test_extracted.csv"
 
     print(f'Start time: {datetime.datetime.now()}')
 
-    model = LGBMClassifier(max_depth=6, learning_rate=0.01, n_estimators=1500, min_split_gain=0.1,
-                                min_child_weight=0.01, min_child_samples=40, subsample=0.6, subsample_freq=5,
-                                colsample_bytree=0.6, reg_alpha=0.1, reg_lambda=0.5, n_jobs=-1)
+    model = LGBM_Classifier()
+    test_model(model)
 
-    validate_test(model)
+    # param_search(model, [0.11, 0.12, 0.13, 0.14])
 
-    # param_search(model, [0.175, 0.2, 0.225])
-
-    # model = LGBMClassifier()
+    # model = CatBoostClassifier(n_estimators=1000, max_depth=6, learning_rate=0.1, task_type="GPU", gpu_ram_part=0.2, verbose=False)
     #
     # param_dict = {
-    #     "n_jobs": [-1]
+    #     "n_estimators": [100, 500, 1000],
+    #     "max_depth": [4, 6, 8],
+    #     "learning_rate": [0.1, 0.01, 0.001],
+    #     "task_type": ["GPU"],
+    #     "gpu_ram_part": [0.2],
+    #     "random_state": [42]
     # }
     #
     # model_search(model, param_dict, 20)
-
+    #
     print(f'End time: {datetime.datetime.now()}')
 
 if __name__ == "__main__":
